@@ -1,0 +1,74 @@
+html {
+  font-family: Consolas;
+  background: #000000;
+  color: #00ff88;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: #000000;
+  color: #00ff88;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:focus-visible,
+textarea:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 1px solid #00ff88;
+  outline-offset: 1px;
+}
+
+::selection {
+  background: rgba(0, 255, 136, 0.22);
+  color: #d0d7d3;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.terminal-toast {
+  animation: terminal-toast-in 180ms ease-out;
+}
+
+.wall-note-shell {
+  animation: wall-note-in 240ms ease-out;
+  transform-origin: top left;
+}
+
+@keyframes terminal-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes wall-note-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}

@@ -1,81 +1,13 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <link rel="stylesheet" href="./Styles/index.css">
-  <title>Freedom Screen — VS Code Style</title>
-</head>
-<body>
-
-  <div class="title-bar">
-    <div class="title">freedom_screen.py — Freedom Screen</div>
-    <div class="window-controls">
-      <span></span><span></span><span></span>
-    </div>
-  </div>
-
-  <div class="main">
-    <div class="activity-bar">
-      <div class="activity-icon active"></div>
-      <div class="activity-icon"></div>
-    </div>
-
-    <aside class="side-bar" aria-label="Explorer">
-      <div class="side-header">EXPLORER</div>
-      <div class="side-section">
-        <div class="side-section-title">FREEDOM_SCREEN</div>
-        <div class="tree">
-          <div class="tree-item active">
-            <span class="file-dot"></span>
-            <span class="file-name">freedom_screen.py</span>
-          </div>
-          <div class="tree-item">
-            <span class="file-dot muted"></span>
-            <span class="file-name">screen.html</span>
-          </div>
-        </div>
-      </div>
-    </aside>
-
-    <div class="editor-area">
-      <div class="tabs">
-        <div class="tab active">freedom_screen.py</div>
-      </div>
-
-      <div class="code-container">
-        <div class="print-line" id="printLine">
-          <span id="prefix" class="keyword">print</span><span class="string">(</span>
-          <span id="quoteOpen" class="string">"</span>
-          
-          <div class="editor-wrapper">
-            <textarea id="editor" spellcheck="false" autofocus placeholder="Type your freedom message..."></textarea>
-          </div>
-
-          <span id="quoteClose" class="string">"</span><span class="string">)</span>
-        </div>
-
-        <div class="toolbar">
-          <button id="runBtn" class="run-btn">▶ Run</button>
-        </div>
-
-        <div class="code-line comment-line">
-          <span class="comment"># Freedom is what you type ↑</span>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="status-bar">
-    <div class="status-left">
-      <span>Python 3.11</span>
-      <span>UTF-8</span>
-      <span>LF</span>
-    </div>
-    <div class="status-right">
-      <span id="status">Ln 1, Col 1</span>
-    </div>
-  </div>
-
- <script src="./Scripts/index.js"></script>
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CCS Freedom Screen</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
 </html>

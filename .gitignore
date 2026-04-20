@@ -1,0 +1,72 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Production/Build
+dist/
+dist-ssr/
+build/
+out/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+.env.production.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+*.local
+
+# IDE and Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.vscode-settings.json
+*.swp
+*.swo
+*.swc
+*.sublime-workspace
+.sublime-project
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE-specific files
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.iml
+
+# Vite
+.vite/
+.viteignore
+
+# Turbo
+.turbo/
+turbo.json
+
+# Testing
+coverage/
+.nyc_output/
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*~
+
