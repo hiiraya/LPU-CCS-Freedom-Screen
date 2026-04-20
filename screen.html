@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Freedom Wall — Terminal</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      height: 100vh;
+      background: #000;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      font-family: 'Consolas', 'Courier New', monospace;
+    }
+    .title-bar {
+      height: 28px;
+      background: #111;
+      border-bottom: 1px solid #222;
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 13px;
+      color: #555;
+    }
+    .title-bar .title {
+      flex: 1;
+      text-align: center;
+      color: #aaa;
+    }
+    .terminal {
+      flex: 1;
+      position: relative;
+      background: #000;
+      overflow: hidden;
+      clip-path: inset(0);
+    }
+    .terminal::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(1200px 600px at 50% 20%, rgba(0, 255, 110, 0.06), transparent 55%),
+        linear-gradient(to bottom, rgba(255,255,255,0.03), transparent 24%, rgba(255,255,255,0.02));
+      opacity: 0.9;
+      z-index: 0;
+    }
+    .terminal::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        rgba(255,255,255,0.02),
+        rgba(255,255,255,0.02) 1px,
+        transparent 1px,
+        transparent 3px
+      );
+      opacity: 0.35;
+      z-index: 0;
+    }
+    .note {
+      position: absolute;
+      min-width: 140px;
+      width: fit-content;
+      max-width: 70vw;
+      padding: 10px 12px;
+      background: rgba(10, 30, 10, 0.78);
+      border: 1px solid rgba(80, 180, 80, 0.55);
+      border-radius: 4px;
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.25) inset,
+        0 0 10px rgba(0, 255, 80, 0.14);
+      color: #aaffaa;
+      font-size: 13px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-family: 'Consolas', monospace;
+      text-align: left;
+      height: auto;
+      overflow: visible;
+      z-index: 1;
+    }
+    .note:hover {
+      border-color: rgba(120, 220, 120, 0.7);
+      box-shadow:
+        0 0 0 1px rgba(0, 0, 0, 0.25) inset,
+        0 0 16px rgba(0, 255, 80, 0.2);
+    }
+    .note-content {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .clear-btn {
+      position: fixed;
+      top: 40px;
+      right: 20px;
+      padding: 6px 12px;
+      background: transparent;
+      color: #888;
+      border: 1px solid #444;
+      border-radius: 3px;
+      font-size: 12px;
+      cursor: pointer;
+      z-index: 10;
+      backdrop-filter: blur(4px);
+    }
+    .clear-btn:hover {
+      color: #fff;
+      border-color: #777;
+    }
+    .no-messages {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #333;
+      font-size: 18px;
+    }
+
+    .note {
+  opacity: 0;
+  transform-origin: center;
+  transition: transform 0.35s ease, opacity 0.35s ease;
+}
+
+.note.show {
+  opacity: 1;
+}
+
+@keyframes spawnGlow {
+  0%   { box-shadow: 0 0 0 rgba(0,255,100,0); }
+  50%  { box-shadow: 0 0 18px rgba(0,255,100,0.35); }
+  100% { box-shadow: 0 0 8px rgba(0,255,100,0.15); }
+}
+
+  </style>
+</head>
+<body>
+
+  <div class="title-bar">
+    <div class="title">freedom_wall — Terminal</div>
+  </div>
+
+  <div class="terminal" id="terminal">
+    <button class="clear-btn" onclick="clearWall()">Clear</button>
+  </div>
+<script>
+  const terminal = document.getElementById('terminal');
+  let lastTs = localStorage.getItem('freedomLastUpdate') || '0';
+  let previousCount = 0;
+
+  const PADDING = 20;
+  const SAFE_TOP = 58;      // leave room for clear button
+  const SAFE_RIGHT = 120;   // leave room for clear button
+  const LAYOUT_KEY = 'freedomLayoutV1';
+
+  function randomRotation() {
+    return (Math.random() * 10 - 5).toFixed(1);
+  }
+
+  function escapeHtml(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function renderPrintCardHtml(text) {
+    const raw = String(text ?? '');
+    return `<div class="note-content">${escapeHtml(raw)}</div>`;
+  }
+
+  function getEntryId(entry, index) {
+    if (entry && typeof entry === 'object' && entry.id) return String(entry.id);
+    // Backward-compatible id for older saved entries (stable-ish across refresh)
+    const text = entry && typeof entry === 'object' ? (entry.text ?? '') : (entry ?? '');
+    return `legacy-${index}-${String(text).length}`;
+  }
+
+  function loadLayout() {
+    try {
+      return JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}') || {};
+    } catch {
+      return {};
+    }
+  }
+
+  function saveLayout(layout) {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+  }
+
+  function drawAll() {
+    Array.from(terminal.children).forEach(el => {
+      if (!el.classList.contains('clear-btn')) el.remove();
+    });
+
+    const data = JSON.parse(localStorage.getItem('freedomPrints') || '[]');
+
+    if (data.length === 0) {
+      const msg = document.createElement('div');
+      msg.className = 'no-messages';
+      msg.textContent = 'empty';
+      terminal.appendChild(msg);
+      previousCount = 0;
+      return;
+    }
+
+    const termRect = terminal.getBoundingClientRect();
+
+    const columns = Math.ceil(Math.sqrt(data.length));
+    const rows = Math.ceil(data.length / columns);
+
+    const cellWidth = termRect.width / columns;
+    const cellHeight = termRect.height / rows;
+
+    const layout = loadLayout();
+    let layoutDirty = false;
+
+    data.forEach((entry, i) => {
+      const div = document.createElement('div');
+      div.className = 'note';
+
+      const text = entry.text || entry;
+      const entryId = getEntryId(entry, i);
+
+      div.innerHTML = renderPrintCardHtml(text);
+
+      terminal.appendChild(div);
+
+      requestAnimationFrame(() => {
+        const rect = div.getBoundingClientRect();
+
+        const col = i % columns;
+        const row = Math.floor(i / columns);
+
+        let left = col * cellWidth + (cellWidth - rect.width) / 2;
+        let top  = row * cellHeight + (cellHeight - rect.height) / 2;
+
+        const saved = layout[entryId];
+        if (!saved) {
+          layout[entryId] = {
+            jx: (Math.random() - 0.5) * 30,
+            jy: (Math.random() - 0.5) * 30,
+            rot: randomRotation(),
+          };
+          layoutDirty = true;
+        }
+
+        left += layout[entryId].jx;
+        top  += layout[entryId].jy;
+
+        left = Math.max(PADDING, Math.min(left, termRect.width - rect.width - PADDING - SAFE_RIGHT));
+        top  = Math.max(PADDING + SAFE_TOP, Math.min(top, termRect.height - rect.height - PADDING));
+
+        const rotation = layout[entryId].rot;
+
+        div.style.left = `${left}px`;
+        div.style.top = `${top}px`;
+
+        // Animate only new cards
+        if (i >= previousCount) {
+          div.style.transform = `translateY(20px) scale(0.85) rotate(${rotation}deg)`;
+
+          setTimeout(() => {
+            div.classList.add('show');
+            div.style.transform = `translateY(0px) scale(1) rotate(${rotation}deg)`;
+            div.style.animation = "spawnGlow 0.8s ease";
+          }, 30);
+        } else {
+          div.classList.add('show');
+          div.style.transform = `rotate(${rotation}deg)`;
+        }
+      });
+    });
+
+    if (layoutDirty) saveLayout(layout);
+    previousCount = data.length;
+  }
+
+  function hasChanged() {
+    const nowTs = localStorage.getItem('freedomLastUpdate') || '0';
+    if (nowTs !== lastTs) {
+      lastTs = nowTs;
+      drawAll();
+    }
+  }
+
+  function clearWall() {
+    if (confirm('Clear everything?')) {
+      localStorage.removeItem('freedomPrints');
+      localStorage.setItem('freedomLastUpdate', Date.now().toString());
+      previousCount = 0;
+      drawAll();
+    }
+  }
+
+  window.addEventListener('storage', (e) => {
+    if (e.key === 'freedomPrints' || e.key === 'freedomLastUpdate') {
+      hasChanged();
+    }
+  });
+
+  window.addEventListener('resize', drawAll);
+
+  setInterval(hasChanged, 2000);
+
+  drawAll();
+</script>
+</body>
+</html>
