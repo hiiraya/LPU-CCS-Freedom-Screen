@@ -69,4 +69,6 @@ coverage/
 *.temp
 *.bak
 *~
-
+SAMPLE_CODE/
+GET_ALL_CODE.py
+extracted_code.md

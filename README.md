@@ -2,6 +2,11 @@
 
 A public coding-style terminal that lets users submit messages through code, and a TV-friendly screen that displays those entries in a scattered board layout.
 
+# Live Product
+Client : 
+https://ccs-freedom-screen.appwrite.network/ 
+
+TV Screen: https://ccs-freedom-screen.appwrite.network/wall
 ## Features
 
 - **Immersive Terminal**: Write and submit messages using a code editor interface.

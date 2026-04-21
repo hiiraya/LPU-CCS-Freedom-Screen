@@ -368,7 +368,8 @@ const PixelBlast = ({
       const quad = new THREE.Mesh(quadGeom, material);
       scene.add(quad);
 
-      const clock = new THREE.Clock();
+      const timer = new THREE.Timer();
+      timer.connect(document);
 
       const setSize = () => {
         const w = container.clientWidth || 1;
@@ -464,12 +465,13 @@ const PixelBlast = ({
       renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
 
       let raf = 0;
-      const animate = () => {
+      const animate = timestamp => {
         if (autoPauseOffscreen && !visibilityRef.current.visible) {
           raf = requestAnimationFrame(animate);
           return;
         }
-        uniforms.uTime.value = timeOffset + clock.getElapsedTime() * speedRef.current;
+        timer.update(timestamp);
+        uniforms.uTime.value = timeOffset + timer.getElapsed() * speedRef.current;
         if (liquidEffect) liquidEffect.uniforms.get('uTime').value = uniforms.uTime.value;
         if (composer) {
           if (touch) touch.update();
@@ -489,7 +491,7 @@ const PixelBlast = ({
       raf = requestAnimationFrame(animate);
 
       threeRef.current = {
-        renderer, scene, camera, material, clock,
+        renderer, scene, camera, material, timer,
         clickIx: 0, uniforms, resizeObserver: ro,
         raf, quad, timeOffset, composer, touch, liquidEffect
       };
@@ -525,6 +527,7 @@ const PixelBlast = ({
       const t = threeRef.current;
       t.resizeObserver?.disconnect();
       cancelAnimationFrame(t.raf);
+      t.timer?.dispose();
       t.quad?.geometry.dispose();
       t.material.dispose();
       t.composer?.dispose();
