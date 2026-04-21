@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "../utils/supabaseClient.js";
+import WallBackground from "../components/WallBackground.jsx";
 
 const MAX_MESSAGES = 50;
 const POSITIONS_STORAGE_KEY = "ccs-freedom-screen-note-positions";
@@ -440,56 +441,61 @@ export default function Wall() {
   return (
     <main style={styles.page}>
       <section style={styles.canvas}>
-        <div style={styles.promptLine}>tail -f ccs-freedom-screen.log</div>
-        <div style={styles.dragHint}>drag entries to rearrange</div>
+        <WallBackground />
 
-        {status && <div style={styles.statusLine}>{status}</div>}
+        <div style={styles.content}>
+          <div style={styles.promptLine}>tail -f ccs-freedom-screen.log</div>
+          <div style={styles.dragHint}>drag entries to rearrange</div>
 
-        {isLoading ? (
-          <div style={styles.emptyState}>loading wall...</div>
-        ) : placedMessages.length === 0 ? (
-          <div style={styles.emptyState}>waiting for first entry...</div>
-        ) : (
-          <section
-            ref={boardRef}
-            style={{ ...styles.board, minHeight: `${boardHeight}px` }}
-          >
-            {placedMessages.map(({ message, placement, ascii }) => (
-              <article
-                key={message.id}
-                style={{
-                  ...styles.note,
-                  left: `${placement.leftPct}%`,
-                  top: `${placement.topPx}px`,
-                  transform: `rotate(${placement.rotationDeg}deg)`,
-                  width: `${placement.widthChars + 4}ch`,
-                  cursor: draggingId === message.id ? "grabbing" : "grab",
-                  // Prevent text selection and touch scroll while dragging
-                  userSelect: "none",
-                  touchAction: "none",
-                  // Lift the dragged note on top of others
-                  zIndex: draggingId === message.id ? 10 : 1,
-                  // Snap-back transition only when NOT dragging
-                  transition: draggingId === message.id ? "none" : "box-shadow 120ms ease",
-                  boxShadow:
-                    draggingId === message.id
-                      ? "0 8px 32px rgba(0, 255, 136, 0.18)"
-                      : undefined,
-                }}
-                onPointerDown={(e) =>
-                  handlePointerDown(e, message.id, placement.leftPct, placement.topPx)
-                }
-                onPointerMove={(e) => handlePointerMove(e, message.id)}
-                onPointerUp={(e) => handlePointerUp(e, message.id)}
-                onPointerCancel={(e) => handlePointerCancel(e, message.id)}
-              >
-                <div className="wall-note-shell" style={styles.noteShell}>
-                  <pre style={styles.noteAscii}>{ascii}</pre>
-                </div>
-              </article>
-            ))}
-          </section>
-        )}
+          {status && <div style={styles.statusLine}>{status}</div>}
+
+          {isLoading ? (
+            <div style={styles.emptyState}>loading wall...</div>
+          ) : placedMessages.length === 0 ? (
+            <div style={styles.emptyState}>waiting for first entry...</div>
+          ) : (
+            <section
+              ref={boardRef}
+              style={{ ...styles.board, minHeight: `${boardHeight}px` }}
+            >
+              {placedMessages.map(({ message, placement, ascii }) => (
+                <article
+                  key={message.id}
+                  style={{
+                    ...styles.note,
+                    left: `${placement.leftPct}%`,
+                    top: `${placement.topPx}px`,
+                    transform: `rotate(${placement.rotationDeg}deg)`,
+                    width: `${placement.widthChars + 4}ch`,
+                    cursor: draggingId === message.id ? "grabbing" : "grab",
+                    // Prevent text selection and touch scroll while dragging
+                    userSelect: "none",
+                    touchAction: "none",
+                    // Lift the dragged note on top of others
+                    zIndex: draggingId === message.id ? 10 : 1,
+                    // Snap-back transition only when NOT dragging
+                    transition:
+                      draggingId === message.id ? "none" : "box-shadow 120ms ease",
+                    boxShadow:
+                      draggingId === message.id
+                        ? "0 8px 32px rgba(0, 255, 136, 0.18)"
+                        : undefined,
+                  }}
+                  onPointerDown={(e) =>
+                    handlePointerDown(e, message.id, placement.leftPct, placement.topPx)
+                  }
+                  onPointerMove={(e) => handlePointerMove(e, message.id)}
+                  onPointerUp={(e) => handlePointerUp(e, message.id)}
+                  onPointerCancel={(e) => handlePointerCancel(e, message.id)}
+                >
+                  <div className="wall-note-shell" style={styles.noteShell}>
+                    <pre style={styles.noteAscii}>{ascii}</pre>
+                  </div>
+                </article>
+              ))}
+            </section>
+          )}
+        </div>
       </section>
     </main>
   );
@@ -509,6 +515,10 @@ const styles = {
     border: "1px solid #111111",
     background:
       "repeating-linear-gradient(180deg, rgba(0, 255, 136, 0.03) 0 1px, transparent 1px 3px), #050505",
+  },
+  content: {
+    position: "relative",
+    zIndex: 1,
   },
   promptLine: {
     position: "absolute",
