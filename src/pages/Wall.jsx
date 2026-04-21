@@ -507,6 +507,7 @@ const styles = {
     padding: "12px",
     background: "#000000",
     color: "#00ff88",
+    position: "relative",
   },
   canvas: {
     position: "relative",
