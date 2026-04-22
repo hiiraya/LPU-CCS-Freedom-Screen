@@ -447,7 +447,7 @@ export default function Terminal() {
     ];
 
     if (!insertedKeys.includes("language")) {
-      successLines.push("Posted in compatibility mode. Run the SQL migrations to restore wall language icons for new entries.");
+      successLines.push("*Entry accepted with fallback schema support.*");
     } else {
       successLines.push("*IDE terminal will close automatically in 3 seconds.*");
     }

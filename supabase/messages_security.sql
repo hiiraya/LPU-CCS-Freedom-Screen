@@ -97,15 +97,41 @@ begin
     raise exception 'Invalid admin password';
   end if;
 
-  delete from public.messages;
+  -- Some Supabase/Postgres setups enforce safe-delete guards that reject
+  -- full-table DELETE statements without an explicit WHERE clause.
+  delete from public.messages
+  where true;
   get diagnostics deleted_count = row_count;
 
   return deleted_count;
 end;
 $$;
 
+create or replace function public.admin_archive_all_messages(admin_password text)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  updated_count integer := 0;
+begin
+  if not public.admin_login(admin_password) then
+    raise exception 'Invalid admin password';
+  end if;
+
+  update public.messages
+  set is_deleted = true
+  where true;
+  get diagnostics updated_count = row_count;
+
+  return updated_count;
+end;
+$$;
+
 grant execute on function public.admin_login(text) to anon, authenticated;
 grant execute on function public.admin_delete_all_messages(text) to anon, authenticated;
+grant execute on function public.admin_archive_all_messages(text) to anon, authenticated;
 
 do $$
 begin

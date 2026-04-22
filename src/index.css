@@ -1,8 +1,11 @@
 html {
-  font-family: Consolas;
+  font-family: "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
   background: #000000;
   color: #00ff88;
   color-scheme: dark;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
@@ -11,6 +14,7 @@ body {
   min-height: 100vh;
   background: #000000;
   color: #00ff88;
+  line-height: 1.45;
 }
 
 * {
@@ -21,6 +25,14 @@ body {
 
 button {
   -webkit-tap-highlight-color: transparent;
+  font: inherit;
+}
+
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
 }
 
 button:focus-visible,

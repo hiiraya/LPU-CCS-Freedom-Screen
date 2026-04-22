@@ -36,6 +36,10 @@ function normalizeSupabaseError(error, fallbackMessage) {
     return new Error("Wall entries must contain visible text and stay within the allowed length.");
   }
 
+  if (lowered.includes("delete requires a where clause")) {
+    return new Error("Admin delete-all SQL is outdated for this Supabase setup. Re-run supabase/messages_security.sql, then try again.");
+  }
+
   if (lowered.includes("could not find the function public.admin_")) {
     return new Error("Admin actions are not installed yet. Run supabase/messages_security.sql in Supabase, then try again.");
   }
@@ -165,10 +169,39 @@ export async function deleteAllMessagesWithAdminPassword(password) {
     admin_password: trimmedPassword,
   });
 
+  if (!result.error) {
+    return {
+      deletedCount: Number(result.data ?? 0),
+      error: null,
+      mode: "hard-delete",
+    };
+  }
+
+  const errorMessage = String(result.error?.message ?? "").toLowerCase();
+  const canFallbackToArchive =
+    errorMessage.includes("delete requires a where clause")
+    || errorMessage.includes("invalid transaction termination")
+    || errorMessage.includes("permission denied");
+
+  if (canFallbackToArchive) {
+    const archive = await supabase.rpc("admin_archive_all_messages", {
+      admin_password: trimmedPassword,
+    });
+
+    if (!archive.error) {
+      return {
+        deletedCount: Number(archive.data ?? 0),
+        error: null,
+        mode: "soft-delete",
+      };
+    }
+  }
+
   return {
-    deletedCount: Number(result.data ?? 0),
+    deletedCount: 0,
     error: result.error
       ? normalizeSupabaseError(result.error, "Unable to delete wall entries.")
-      : null,
+      : new Error("Unable to delete wall entries."),
+    mode: null,
   };
 }
