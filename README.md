@@ -1,118 +1,144 @@
 # CCS Freedom Screen
 
-A public coding-style terminal that lets users submit messages through code, and a TV-friendly screen that displays those entries in a scattered board layout.
+CCS Freedom Screen is a coding-themed message wall built for public display. Users submit a message by writing code in a browser-based IDE, and the output appears on a live wall designed for TVs, projectors, and shared spaces.
 
-# Live Product
-Client : 
-https://ccs-freedom-screen.appwrite.network/ 
+## Live Routes
 
-TV Screen: https://ccs-freedom-screen.appwrite.network/wall
-## Features
+- Client: <https://ccs-freedom-screen.appwrite.network/>
+- Wall: <https://ccs-freedom-screen.appwrite.network/wall>
 
-- **Immersive Terminal**: Write and submit messages using a code editor interface.
-- **Wall Display**: View submitted messages in a dynamic, scattered layout suitable for TVs or large screens.
-- **Real-time Updates**: Messages are stored and retrieved using Supabase for seamless sharing.
-- **Responsive Design**: Works on various devices with a focus on terminal and wall views.
+## What It Does
 
-## Tech Stack
+- Presents a VS Code-inspired editor for writing and submitting messages as code.
+- Detects the active language automatically and validates program shape before posting.
+- Converts printed output into wall entries stored in Supabase.
+- Shows entries on a realtime wall with pan, zoom, minimap, and placement persistence.
+- Includes admin tools for CSV export, single-entry deletion, and clearing the wall.
 
-- **Frontend**: React 19, JavaScript, Vite
-- **Routing**: React Router DOM
-- **Backend/Database**: Supabase
-- **Linting**: ESLint
-- **Build Tool**: Vite
+## Supported Languages
 
-## Prerequisites
+- Python
+- JavaScript
+- Java
+- C++
+- C#
 
-- Node.js (version 18 or higher)
-- npm or yarn
-- A Supabase account and project
+## Stack
 
-## Installation
+- React 19
+- Vite
+- React Router DOM
+- Supabase
+- ESLint
+- `three`, `ogl`, and `postprocessing` for visual effects
 
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd ccs-freedom-screen
-   ```
+## Project Routes
 
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
+- `/` - Interactive IDE submission screen
+- `/wall` - Live wall display with admin and viewer controls
 
-3. Set up environment variables:
-   - Create a `.env` file in the root directory.
-   - Add your Supabase URL and anon key:
-     ```
-     VITE_SUPABASE_URL=your-supabase-url
-     VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
-     ```
+## Local Setup
 
-## Usage
+### Prerequisites
 
-### Local Development
+- Node.js 18+
+- npm
+- A Supabase project
 
-Start the development server:
+### Install
+
+```bash
+git clone <repository-url>
+cd CCS-Freedom-Screen
+npm install
+```
+
+### Environment Variables
+
+Create a `.env` file in the project root:
+
+```env
+VITE_SUPABASE_URL=your-supabase-project-url
+VITE_SUPABASE_ANON_KEY=your-supabase-anon-key
+```
+
+The app throws an error on startup if either variable is missing.
+
+## Run The App
+
 ```bash
 npm run dev
 ```
-Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-### Routes
+Open <http://localhost:5173>.
 
-- `/` - Immersive terminal for writing code and posting entries.
-- `/wall` - Read-only wall view for display screens/TVs.
+### Available Scripts
 
-### Production Build
-
-Build the project for production:
-```bash
-npm run build
-```
-
-Preview the production build:
-```bash
-npm run preview
-```
-
-## npm commands
-
-- `npm run dev` - Start the development server.
-- `npm run build` - Build the project for production.
-- `npm run lint` - Run ESLint for code linting.
-- `npm run preview` - Preview the production build locally.
-
-## Project Structure
-
-```
-ccs-freedom-screen/
-├── src/
-│   ├── App.jsx          # Main app component
-│   ├── main.jsx         # Entry point
-│   ├── index.css        # Global styles
-│   ├── pages/
-│   │   ├── Terminal.jsx # Terminal page component
-│   │   └── Wall.jsx     # Wall page component
-│   └── utils/
-│       ├── parser.js    # Utility for parsing
-│       └── supabaseClient.js # Supabase client setup
-├── supabase/
-│   └── messages_security.sql # Supabase security setup
-├── package.json
-├── vite.config.js
-└── README.md
-```
+- `npm run dev` - Start the Vite dev server
+- `npm run build` - Create a production build
+- `npm run preview` - Preview the production build locally
+- `npm run lint` - Run ESLint
 
 ## Supabase Setup
 
-1. Create a new Supabase project.
-2. In the Supabase dashboard, go to the SQL Editor.
-3. Apply the script from [`supabase/messages_security.sql`](./supabase/messages_security.sql).
+Run [`supabase/messages_security.sql`](./supabase/messages_security.sql) in the Supabase SQL Editor.
 
-This script:
-- Adds `language`, `full_code`, and `is_deleted` columns if missing.
-- Enables Row Level Security on `public.messages`.
-- Allows public users to `select` visible messages.
-- Allows public users to `insert` new messages.
-- Blocks public `update` and `delete`.
+That script:
+
+- adds wall-related columns if they do not already exist
+- enables row-level security on `public.messages`
+- allows public reads of visible entries
+- allows public inserts for valid entries
+- blocks public updates and deletes
+- installs RPC functions for admin login and admin delete actions
+- enables realtime publication for the `messages` table
+
+## Important Admin Note
+
+The SQL script seeds `public.admin_settings` with a placeholder password:
+
+```text
+Enter_Admin_Password
+```
+
+Before using admin tools in `/wall`, update that value in Supabase to a real password hash or change the placeholder in the SQL script before running it in production.
+
+## Behavior Notes
+
+- Only printed output is posted to the wall.
+- The IDE enforces a visible output requirement before submission.
+- The wall uses realtime updates when available and falls back to polling if realtime disconnects.
+- Message inserts and reads use schema fallbacks so the app can still work against older table versions.
+
+## Project Structure
+
+```text
+CCS-Freedom-Screen/
+|-- src/
+|   |-- App.jsx
+|   |-- main.jsx
+|   |-- index.css
+|   |-- pages/
+|   |   |-- Terminal.jsx
+|   |   `-- Wall.jsx
+|   |-- components/
+|   |   |-- LanguageIcon.jsx
+|   |   |-- PixelBlast.jsx
+|   |   `-- WallBackground.jsx
+|   `-- utils/
+|       |-- documentHead.js
+|       |-- languages.js
+|       |-- messagePlacement.js
+|       |-- messagesApi.js
+|       |-- parser.js
+|       `-- supabaseClient.js
+|-- supabase/
+|   `-- messages_security.sql
+|-- package.json
+|-- vite.config.js
+`-- README.md
+```
+
+## Status
+
+This repository is currently focused on the live browser experience and Supabase-backed wall workflow. The `OLD_CODE/` folder is retained as archive/reference material and is not part of the active app.
