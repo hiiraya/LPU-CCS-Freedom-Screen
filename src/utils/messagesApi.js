@@ -205,3 +205,34 @@ export async function deleteAllMessagesWithAdminPassword(password) {
     mode: null,
   };
 }
+
+export async function deleteMessageWithAdminPassword(password, messageId) {
+  const trimmedPassword = String(password ?? "").trim();
+  const targetMessageId = String(messageId ?? "").trim();
+
+  if (!trimmedPassword) {
+    return {
+      deletedCount: 0,
+      error: new Error("Enter the admin password first."),
+    };
+  }
+
+  if (!targetMessageId) {
+    return {
+      deletedCount: 0,
+      error: new Error("The selected entry is invalid."),
+    };
+  }
+
+  const result = await supabase.rpc("admin_delete_message", {
+    admin_password: trimmedPassword,
+    target_message_id: targetMessageId,
+  });
+
+  return {
+    deletedCount: Number(result.data ?? 0),
+    error: result.error
+      ? normalizeSupabaseError(result.error, "Unable to delete the selected wall entry.")
+      : null,
+  };
+}

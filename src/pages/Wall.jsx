@@ -11,6 +11,7 @@ import { setDocumentHead } from "../utils/documentHead.js";
 import { getLanguageConfig } from "../utils/languages.js";
 import { generateMessagePlacement } from "../utils/messagePlacement.js";
 import {
+  deleteMessageWithAdminPassword,
   deleteAllMessagesWithAdminPassword,
   fetchAllMessagesForExport,
   fetchMessagesWithFallback,
@@ -46,6 +47,13 @@ function persistPosition(id, leftPct, topPx) {
   try {
     const existing = loadSavedPositions();
     existing[id] = { leftPct, topPx };
+    window.localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(existing));
+  } catch {}
+}
+function removeSavedPosition(id) {
+  try {
+    const existing = loadSavedPositions();
+    delete existing[id];
     window.localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(existing));
   } catch {}
 }
@@ -721,6 +729,37 @@ export default function Wall() {
     setSelectedEntry(entry);
   }, []);
 
+  const handleAdminDeleteEntry = useCallback(async (messageId) => {
+    if (!adminSession?.password || isAdminBusy) return;
+    setIsAdminBusy(true);
+    setAdminNotice(null);
+    const result = await deleteMessageWithAdminPassword(adminSession.password, messageId);
+    setIsAdminBusy(false);
+    if (result.error) {
+      setAdminNotice({ tone: "error", message: result.error.message });
+      return;
+    }
+    if (result.deletedCount < 1) {
+      setAdminNotice({ tone: "error", message: "Entry was already deleted or unavailable." });
+      return;
+    }
+    const targetId = String(messageId);
+    setMessages((previous) => previous.filter((message) => String(message.id) !== targetId));
+    setUserPositions((previous) => {
+      if (!(targetId in previous) && !(messageId in previous)) return previous;
+      const next = { ...previous };
+      delete next[targetId];
+      delete next[messageId];
+      return next;
+    });
+    delete placementsRef.current[targetId];
+    delete placementsRef.current[messageId];
+    removeSavedPosition(targetId);
+    removeSavedPosition(messageId);
+    if (String(selectedEntry?.message?.id) === targetId) setSelectedEntry(null);
+    setAdminNotice({ tone: "success", message: "Deleted selected entry." });
+  }, [adminSession, isAdminBusy, selectedEntry?.message?.id]);
+
   // ── Note drag handlers ─────────────────────────────────────────────────────
   const handlePointerDown = (e, id, currentLeftPct, currentTopPx) => {
     e.preventDefault();
@@ -1214,6 +1253,18 @@ export default function Wall() {
               <pre style={styles.detailCodeBlock}>
                 <code>{selectedEntry.message.full_code || selectedEntry.message.text}</code>
               </pre>
+              {adminSession?.password && (
+                <div style={styles.detailActions}>
+                  <button
+                    type="button"
+                    style={styles.detailDeleteBtn}
+                    disabled={isAdminBusy}
+                    onClick={() => void handleAdminDeleteEntry(selectedEntry.message.id)}
+                  >
+                    {isAdminBusy ? "Deleting..." : "Delete Entry"}
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1523,6 +1574,22 @@ const styles = {
     fontSize: "12px", lineHeight: 1.55,
     overflow: "auto", whiteSpace: "pre-wrap",
     wordBreak: "break-word",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  detailActions: {
+    marginTop: "14px",
+    display: "flex",
+    justifyContent: "flex-end",
+  },
+  detailDeleteBtn: {
+    minHeight: "40px",
+    padding: "0 14px",
+    border: "1px solid #6a2626",
+    background: "#2a0d0d",
+    color: "#ffb3b3",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontSize: "12px",
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
   },
 };

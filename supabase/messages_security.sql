@@ -129,9 +129,38 @@ begin
 end;
 $$;
 
+drop function if exists public.admin_delete_message(text, bigint);
+
+create or replace function public.admin_delete_message(admin_password text, target_message_id text)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted_count integer := 0;
+begin
+  if not public.admin_login(admin_password) then
+    raise exception 'Invalid admin password';
+  end if;
+
+  if target_message_id is null or length(trim(target_message_id)) = 0 then
+    return 0;
+  end if;
+
+  update public.messages
+  set is_deleted = true
+  where id::text = trim(target_message_id);
+  get diagnostics deleted_count = row_count;
+
+  return deleted_count;
+end;
+$$;
+
 grant execute on function public.admin_login(text) to anon, authenticated;
 grant execute on function public.admin_delete_all_messages(text) to anon, authenticated;
 grant execute on function public.admin_archive_all_messages(text) to anon, authenticated;
+grant execute on function public.admin_delete_message(text, text) to anon, authenticated;
 
 do $$
 begin
