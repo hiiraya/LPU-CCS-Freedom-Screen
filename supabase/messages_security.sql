@@ -1,9 +1,28 @@
 alter table public.messages
   add column if not exists language text,
   add column if not exists full_code text,
-  add column if not exists is_deleted boolean not null default false;
+  add column if not exists is_deleted boolean not null default false,
+  add column if not exists pos_x double precision,
+  add column if not exists pos_y double precision,
+  add column if not exists rotation double precision;
+
+create extension if not exists pgcrypto;
+
+create table if not exists public.admin_settings (
+  id boolean primary key default true check (id),
+  password_hash text not null,
+  updated_at timestamp with time zone not null default timezone('utc', now())
+);
+
+update public.messages
+set
+  pos_x = coalesce(pos_x, 4 + random() * 88),
+  pos_y = coalesce(pos_y, 48 + random() * 1100),
+  rotation = coalesce(rotation, (random() * 8) - 4)
+where pos_x is null or pos_y is null or rotation is null;
 
 alter table public.messages enable row level security;
+alter table public.admin_settings enable row level security;
 
 drop policy if exists "messages_public_select" on public.messages;
 create policy "messages_public_select"
@@ -27,6 +46,89 @@ drop policy if exists "messages_public_delete" on public.messages;
 
 revoke update on public.messages from anon, authenticated;
 revoke delete on public.messages from anon, authenticated;
+revoke all on public.admin_settings from anon, authenticated;
+
+drop policy if exists "admin_settings_block_all" on public.admin_settings;
+create policy "admin_settings_block_all"
+on public.admin_settings
+for all
+to public
+using (false)
+with check (false);
+
+insert into public.admin_settings (id, password_hash)
+values (true, extensions.crypt('Enter_Admin_Password', extensions.gen_salt('bf')))
+on conflict (id) do nothing;
+
+create or replace function public.admin_login(admin_password text)
+returns boolean
+language plpgsql
+security definer
+set search_path = public, extensions
+as $$
+declare
+  configured_hash text;
+begin
+  select password_hash
+  into configured_hash
+  from public.admin_settings
+  where id = true;
+
+  if configured_hash is null then
+    return false;
+  end if;
+
+  return admin_password is not null
+    and length(trim(admin_password)) > 0
+    and extensions.crypt(admin_password, configured_hash) = configured_hash;
+end;
+$$;
+
+create or replace function public.admin_delete_all_messages(admin_password text)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted_count integer := 0;
+begin
+  if not public.admin_login(admin_password) then
+    raise exception 'Invalid admin password';
+  end if;
+
+  delete from public.messages;
+  get diagnostics deleted_count = row_count;
+
+  return deleted_count;
+end;
+$$;
+
+grant execute on function public.admin_login(text) to anon, authenticated;
+grant execute on function public.admin_delete_all_messages(text) to anon, authenticated;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'messages'
+  ) then
+    alter publication supabase_realtime add table public.messages;
+  end if;
+end
+$$;
 
 comment on table public.messages is
 'Public wall entries. Anonymous users may read visible entries and insert new ones, but they cannot update or delete existing rows.';
+
+comment on column public.messages.pos_x is
+'Persistent horizontal note position stored as a world percentage.';
+
+comment on column public.messages.pos_y is
+'Persistent vertical note position stored in world pixels.';
+
+comment on column public.messages.rotation is
+'Persistent note rotation in degrees.';

@@ -1,14 +1,29 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import LanguageIcon from "../components/LanguageIcon.jsx";
 import beanIcon from "../images/bean.svg";
-import { analyzeSubmission, detectLanguage } from "../utils/parser.js";
+import { analyzeSubmission, detectLanguage, previewSubmissionOutput } from "../utils/parser.js";
 import { setDocumentHead } from "../utils/documentHead.js";
 import { getLanguageConfig, SUPPORTED_LANGUAGES } from "../utils/languages.js";
-import { supabase } from "../utils/supabaseClient.js";
+import { generateMessagePlacement } from "../utils/messagePlacement.js";
+import { insertMessageWithFallback } from "../utils/messagesApi.js";
 
 const WRAP_STORAGE_KEY = "ccs-freedom-screen-terminal-wrap-lines";
+const LAST_SENT_STORAGE_KEY = "ccs-freedom-screen-last-sent";
 const LINE_HEIGHT = 21;
 const FONT_SIZE = 13;
+const MESSAGE_CHAR_LIMIT = 200;
+const MESSAGE_COOLDOWN_MS = 5000;
+const TERMINAL_AUTO_CLOSE_MS = 3000;
+const TERMINAL_TYPE_INTERVAL_MS = 18;
+const TERMINAL_LINE_INTERVAL_MS = 140;
+
+const IDE_COMMANDS = {
+  python: "py entry.py",
+  javascript: "node entry.js",
+  java: "javac Main.java; if ($?) { java Main }",
+  cpp: "g++ main.cpp -o entry; if ($?) { .\\entry.exe }",
+  csharp: "dotnet run Program.cs",
+};
 
 const VS = {
   bg: "#1e1e1e",
@@ -164,14 +179,58 @@ function tokenize(code, language) {
   return output;
 }
 
+function renderFormattedTerminalText(text, keyPrefix = "terminal") {
+  const parts = String(text ?? "").split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*)/g);
+
+  return parts.filter(Boolean).map((part, index) => {
+    const key = `${keyPrefix}-${index}`;
+
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={key} style={styles.terminalStrong}>
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+
+    if (part.startsWith("__") && part.endsWith("__")) {
+      return (
+        <span key={key} style={styles.terminalUnderline}>
+          {part.slice(2, -2)}
+        </span>
+      );
+    }
+
+    if (part.startsWith("*") && part.endsWith("*")) {
+      return (
+        <em key={key} style={styles.terminalEmphasis}>
+          {part.slice(1, -1)}
+        </em>
+      );
+    }
+
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code key={key} style={styles.terminalCode}>
+          {part.slice(1, -1)}
+        </code>
+      );
+    }
+
+    return <span key={key}>{part}</span>;
+  });
+}
+
 export default function Terminal() {
   const [code, setCode] = useState("");
   const [wrapLines, setWrapLines] = useState(getInitialWrapState);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [toast, setToast] = useState(null);
   const [errorLine, setErrorLine] = useState(null);
   const [lineHeights, setLineHeights] = useState([]);
+  const [terminalSession, setTerminalSession] = useState(null);
+  const [typedCommand, setTypedCommand] = useState("");
+  const [visibleTerminalLines, setVisibleTerminalLines] = useState(0);
 
   const textareaRef = useRef(null);
   const highlightedRef = useRef(null);
@@ -180,6 +239,8 @@ export default function Terminal() {
   const measureRef = useRef(null);
 
   const detectedLanguage = useMemo(() => getLanguageConfig(detectLanguage(code)), [code]);
+  const previewOutput = useMemo(() => previewSubmissionOutput(code), [code]);
+  const previewLength = previewOutput?.trim().length ?? 0;
   const sourceLines = useMemo(() => code.split("\n"), [code]);
   const lineCount = sourceLines.length;
   const highlightedCode = useMemo(
@@ -188,18 +249,51 @@ export default function Terminal() {
   );
 
   useEffect(() => {
-    setDocumentHead("CCS Freedom Terminal", beanIcon);
+    setDocumentHead("CCS Freedom IDE", beanIcon);
   }, []);
-
-  useEffect(() => {
-    if (!toast || typeof window === "undefined") return undefined;
-    const timeout = window.setTimeout(() => setToast(null), 2600);
-    return () => window.clearTimeout(timeout);
-  }, [toast]);
 
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (!terminalSession || typeof window === "undefined") return undefined;
+
+    let typeInterval = null;
+    let lineInterval = null;
+    let closeTimeout = null;
+
+    setTypedCommand("");
+    setVisibleTerminalLines(0);
+
+    let commandIndex = 0;
+    typeInterval = window.setInterval(() => {
+      commandIndex += 1;
+      setTypedCommand(terminalSession.command.slice(0, commandIndex));
+      if (commandIndex >= terminalSession.command.length) {
+        window.clearInterval(typeInterval);
+        let lineIndex = 0;
+        lineInterval = window.setInterval(() => {
+          lineIndex += 1;
+          setVisibleTerminalLines(lineIndex);
+          if (lineIndex >= terminalSession.lines.length) {
+            window.clearInterval(lineInterval);
+            if (terminalSession.variant === "success") {
+              closeTimeout = window.setTimeout(() => {
+                setTerminalSession(null);
+              }, TERMINAL_AUTO_CLOSE_MS);
+            }
+          }
+        }, TERMINAL_LINE_INTERVAL_MS);
+      }
+    }, TERMINAL_TYPE_INTERVAL_MS);
+
+    return () => {
+      if (typeInterval) window.clearInterval(typeInterval);
+      if (lineInterval) window.clearInterval(lineInterval);
+      if (closeTimeout) window.clearTimeout(closeTimeout);
+    };
+  }, [terminalSession]);
 
   const recomputeLineHeights = useCallback(() => {
     if (!wrapLines || !editorWrapRef.current || !measureRef.current) {
@@ -261,69 +355,106 @@ export default function Terminal() {
     requestAnimationFrame(() => textareaRef.current?.focus());
   };
 
-  const handleRun = async (event) => {
+  const openIdeTerminal = useCallback((languageKey, variant, lines) => {
+    const config = getLanguageConfig(languageKey);
+    const command = `PS C:\\Users\\Administrator> ${IDE_COMMANDS[languageKey] ?? `run ${config.fileName}`}`;
+    setTerminalSession({
+      id: Date.now(),
+      variant,
+      command,
+      lines,
+    });
+  }, []);
+
+  const handleRun = useCallback(async (event) => {
     event?.preventDefault();
 
     const analysis = analyzeSubmission(code);
 
     if (!analysis.parsed) {
       setErrorLine(analysis.syntaxError?.line ?? 1);
-      setToast({
-        kind: "error",
-        message: analysis.syntaxError?.message ?? "Invalid print syntax.",
-      });
+      openIdeTerminal(detectedLanguage.key, "error", [
+        `**IDE validation failed** at line ${analysis.syntaxError?.line ?? 1}.`,
+        analysis.syntaxError?.message ?? "Invalid print syntax.",
+      ]);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    const visibleOutput = analysis.parsed.output.trim();
+
+    if (!visibleOutput) {
+      setErrorLine(null);
+      openIdeTerminal(analysis.parsed.language, "error", [
+        "**Nothing to send yet.**",
+        "Your program needs to print at least one visible character before it can post to the wall.",
+      ]);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    if (visibleOutput.length > MESSAGE_CHAR_LIMIT) {
+      setErrorLine(null);
+      openIdeTerminal(analysis.parsed.language, "error", [
+        `**Output length:** ${visibleOutput.length}/${MESSAGE_CHAR_LIMIT}`,
+        `Max ${MESSAGE_CHAR_LIMIT} characters per wall entry.`,
+      ]);
+      textareaRef.current?.focus();
+      return;
+    }
+
+    const lastSent = Number(window.localStorage.getItem(LAST_SENT_STORAGE_KEY) ?? 0);
+    const remainingCooldown = MESSAGE_COOLDOWN_MS - (Date.now() - lastSent);
+    if (remainingCooldown > 0) {
+      openIdeTerminal(analysis.parsed.language, "error", [
+        "**Cooldown active.**",
+        `Wait ${Math.ceil(remainingCooldown / 1000)}s before sending another entry.`,
+      ]);
       textareaRef.current?.focus();
       return;
     }
 
     setIsSubmitting(true);
-    setToast(null);
     setErrorLine(null);
+    const initialPlacement = generateMessagePlacement(`${Date.now()}-${visibleOutput}`, visibleOutput);
 
     const payload = {
-      text: analysis.parsed.output.trim(),
+      text: visibleOutput,
       full_code: code,
       language: analysis.parsed.language,
+      pos_x: initialPlacement.pos_x,
+      pos_y: initialPlacement.pos_y,
+      rotation: initialPlacement.rotation,
     };
 
-    let insertErrorMessage = null;
-
-    const { error: extendedInsertError } = await supabase.from("messages").insert([payload]);
-
-    if (extendedInsertError) {
-      const missingColumnError =
-        extendedInsertError.message.includes("full_code") ||
-        extendedInsertError.message.includes("language") ||
-        extendedInsertError.message.includes("column");
-
-      if (missingColumnError) {
-        const { error: fallbackInsertError } = await supabase
-          .from("messages")
-          .insert([{ text: analysis.parsed.output.trim() }]);
-
-        insertErrorMessage = fallbackInsertError?.message ?? null;
-      } else {
-        insertErrorMessage = extendedInsertError.message;
-      }
-    }
+    const { error: insertError, insertedKeys } = await insertMessageWithFallback(payload);
 
     setIsSubmitting(false);
 
-    if (insertErrorMessage) {
-      setToast({
-        kind: "error",
-        message: insertErrorMessage,
-      });
+    if (insertError) {
+      openIdeTerminal(analysis.parsed.language, "error", [
+        "**Supabase rejected the entry.**",
+        insertError.message,
+      ]);
       textareaRef.current?.focus();
       return;
     }
 
-    setToast({
-      kind: "success",
-      message: "entry sent",
-    });
+    window.localStorage.setItem(LAST_SENT_STORAGE_KEY, String(Date.now()));
+    const successLines = [
+      visibleOutput,
+      "**Entry sent to wall.**",
+    ];
+
+    if (!insertedKeys.includes("language")) {
+      successLines.push("Posted in compatibility mode. Run the SQL migrations to restore wall language icons for new entries.");
+    } else {
+      successLines.push("*IDE terminal will close automatically in 3 seconds.*");
+    }
+
+    openIdeTerminal(analysis.parsed.language, "success", successLines);
     textareaRef.current?.focus();
-  };
+  }, [code, detectedLanguage.key, openIdeTerminal]);
 
   const handleKeyDown = useCallback((event) => {
     const element = event.target;
@@ -373,6 +504,7 @@ export default function Terminal() {
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
         @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+        @keyframes blinkCursor { 50% { opacity: 0; } }
         ::-webkit-scrollbar { width: 5px; height: 5px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #424242; border-radius: 3px; }
@@ -400,19 +532,6 @@ export default function Terminal() {
           border: 0,
         }}
       />
-
-      {toast && (
-        <div
-          aria-live="polite"
-          style={{
-            ...styles.toast,
-            borderColor: toast.kind === "error" ? "#5a1d1d" : "#163225",
-            color: toast.kind === "error" ? "#ff9a9a" : "#8ef0b6",
-          }}
-        >
-          {toast.message}
-        </div>
-      )}
 
       {sidebarOpen && <div onClick={() => setSidebarOpen(false)} style={styles.sidebarScrim} />}
 
@@ -472,8 +591,8 @@ export default function Terminal() {
                   `Console.WriteLine(...)`.
                 </p>
                 <p style={styles.sidebarParagraph}>
-                  String variables are supported, and Python triple-quoted strings can be
-                  posted as multiline output.
+                  Python now supports string variables, f-strings, triple-quoted multiline
+                  text, and simple `for ... in range(...)` loops in the wall preview.
                 </p>
               </div>
 
@@ -563,7 +682,7 @@ export default function Terminal() {
 
                 <textarea
                   ref={textareaRef}
-                  aria-label="CCS Freedom Terminal code editor"
+                  aria-label="CCS Freedom IDE code editor"
                   autoCapitalize="off"
                   autoCorrect="off"
                   autoComplete="off"
@@ -588,6 +707,55 @@ export default function Terminal() {
               </div>
             </div>
 
+            {terminalSession && (
+              <section style={styles.ideTerminal}>
+                <div style={styles.ideTerminalHeader}>
+                  <div style={styles.ideTerminalTitleRow}>
+                    <span style={styles.ideTerminalTitle}>TERMINAL</span>
+                    <span
+                      style={{
+                        ...styles.ideTerminalBadge,
+                        color: terminalSession.variant === "error" ? "#ffb3b3" : "#8ef0b6",
+                        borderColor: terminalSession.variant === "error" ? "rgba(255,107,107,0.3)" : "rgba(88, 214, 141, 0.3)",
+                      }}
+                    >
+                      {terminalSession.variant === "error" ? "error" : "success"}
+                    </span>
+                  </div>
+                  <button type="button" onClick={() => setTerminalSession(null)} style={styles.ideTerminalClose}>
+                    x
+                  </button>
+                </div>
+
+                <div style={styles.ideTerminalBody}>
+                  <div style={styles.ideTerminalPrompt}>
+                    <span>{typedCommand}</span>
+                    {typedCommand.length < terminalSession.command.length && <span style={styles.ideTerminalCursor} />}
+                  </div>
+
+                  {typedCommand.length === terminalSession.command.length &&
+                    terminalSession.lines.slice(0, visibleTerminalLines).map((line, index) => (
+                      <div
+                        key={`${terminalSession.id}-${index}`}
+                        style={{
+                          ...styles.ideTerminalLine,
+                          color:
+                            terminalSession.variant === "error" && index > 0
+                              ? "#ff9a9a"
+                              : terminalSession.variant === "success" && index === 0
+                                ? "#d4d4d4"
+                                : terminalSession.variant === "success"
+                                  ? "#8ef0b6"
+                                  : "#c7ccd1",
+                        }}
+                      >
+                        {renderFormattedTerminalText(line, `${terminalSession.id}-${index}`)}
+                      </div>
+                    ))}
+                </div>
+              </section>
+            )}
+
             <div style={styles.statusBar}>
               <div style={styles.statusGroup}>
                 <span>main</span>
@@ -596,6 +764,20 @@ export default function Terminal() {
 
               <div style={styles.statusGroup}>
                 <span>{lineCount} lines</span>
+                <span
+                  style={{
+                    color:
+                      previewOutput === null
+                        ? "#c3d8e5"
+                        : previewLength > MESSAGE_CHAR_LIMIT
+                          ? "#ffd1d1"
+                          : previewLength === 0
+                            ? "#ffe29c"
+                            : "#ffffff",
+                  }}
+                >
+                  entry {previewOutput === null ? "--" : previewLength}/{MESSAGE_CHAR_LIMIT}
+                </span>
                 <span>{wrapLines ? "Wrap" : "No Wrap"}</span>
                 <span>UTF-8</span>
               </div>
@@ -958,6 +1140,100 @@ const styles = {
     fontSize: "11px",
     fontFamily: "-apple-system, sans-serif",
   },
+  ideTerminal: {
+    background: "#181818",
+    borderTop: "1px solid #2c2c2c",
+    animation: "fadeUp 0.16s ease",
+    flexShrink: 0,
+  },
+  ideTerminalHeader: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    padding: "6px 12px",
+    borderBottom: "1px solid #262626",
+    fontFamily: "-apple-system, sans-serif",
+  },
+  ideTerminalTitleRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  ideTerminalTitle: {
+    fontSize: "10px",
+    letterSpacing: "0.1em",
+    color: "#a0a0a0",
+    textTransform: "uppercase",
+    fontWeight: 700,
+  },
+  ideTerminalBadge: {
+    padding: "2px 6px",
+    borderRadius: "999px",
+    border: "1px solid",
+    fontSize: "10px",
+    textTransform: "uppercase",
+  },
+  ideTerminalClose: {
+    border: "none",
+    background: "transparent",
+    color: "#858585",
+    cursor: "pointer",
+    fontSize: "16px",
+    lineHeight: 1,
+  },
+  ideTerminalBody: {
+    padding: "10px 12px 12px",
+    fontFamily: "'SF Mono', Consolas, 'Courier New', monospace",
+    fontSize: "12px",
+    lineHeight: 1.6,
+    color: "#d4d4d4",
+    maxHeight: "180px",
+    overflowY: "auto",
+    background: "#111111",
+  },
+  ideTerminalPrompt: {
+    display: "flex",
+    alignItems: "center",
+    minHeight: "20px",
+    color: "#d4d4d4",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+  },
+  ideTerminalCursor: {
+    display: "inline-block",
+    width: "7px",
+    height: "15px",
+    marginLeft: "2px",
+    background: "#d4d4d4",
+    animation: "blinkCursor 1s step-end infinite",
+  },
+  ideTerminalLine: {
+    marginTop: "4px",
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+  },
+  terminalStrong: {
+    fontWeight: 700,
+    color: "inherit",
+  },
+  terminalEmphasis: {
+    fontStyle: "italic",
+    color: "#8fd7ff",
+  },
+  terminalUnderline: {
+    textDecoration: "underline",
+    textUnderlineOffset: "2px",
+    color: "inherit",
+  },
+  terminalCode: {
+    fontFamily: "'SF Mono', Consolas, 'Courier New', monospace",
+    fontSize: "0.95em",
+    background: "rgba(255, 255, 255, 0.08)",
+    border: "1px solid rgba(255, 255, 255, 0.08)",
+    borderRadius: "4px",
+    padding: "1px 5px",
+    color: "#f4d58d",
+  },
   statusBar: {
     background: VS.statusBar,
     display: "flex",
@@ -982,19 +1258,5 @@ const styles = {
     color: "#ffffff",
     fontSize: "10px",
     fontWeight: 700,
-  },
-  toast: {
-    position: "fixed",
-    top: "16px",
-    right: "16px",
-    zIndex: 30,
-    maxWidth: "min(92vw, 320px)",
-    padding: "12px 16px",
-    borderRadius: "6px",
-    border: "1px solid",
-    background: "#090909",
-    boxShadow: "0 10px 24px rgba(0, 0, 0, 0.35)",
-    fontSize: "14px",
-    animation: "fadeUp 0.15s ease",
   },
 };

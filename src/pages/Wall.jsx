@@ -2,11 +2,25 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { supabase } from "../utils/supabaseClient.js";
 import WallBackground from "../components/WallBackground.jsx";
 import LanguageIcon from "../components/LanguageIcon.jsx";
+import loginIcon from "../images/login.svg";
+import resetViewIcon from "../images/reset-view.svg";
 import terminalIcon from "../images/terminal-icon.svg";
+import zoomInIcon from "../images/zoom-in.svg";
+import zoomOutIcon from "../images/zoom-out.svg";
 import { setDocumentHead } from "../utils/documentHead.js";
 import { getLanguageConfig } from "../utils/languages.js";
+import { generateMessagePlacement } from "../utils/messagePlacement.js";
+import {
+  deleteAllMessagesWithAdminPassword,
+  fetchAllMessagesForExport,
+  fetchMessagesWithFallback,
+  verifyAdminPassword,
+} from "../utils/messagesApi.js";
 
-const MAX_MESSAGES = 67;
+const MAX_MESSAGES = 100;
+const REALTIME_BATCH_SIZE = 4;
+const REALTIME_PROCESS_INTERVAL_MS = 140;
+const REALTIME_FALLBACK_POLL_MS = 5000;
 const POSITIONS_STORAGE_KEY = "ccs-freedom-screen-note-positions";
 const BASE_NOTE_WIDTH = 168;
 const MAX_ZOOM = 2.5;
@@ -62,46 +76,21 @@ function removeMessage(previous, id) {
   return previous.filter((message) => message.id !== id);
 }
 
-function hashSeed(input) {
-  let hash = 0;
-  for (let index = 0; index < input.length; index += 1) {
-    hash = (hash << 5) - hash + input.charCodeAt(index);
-    hash |= 0;
-  }
-  return Math.abs(hash);
-}
+function applyRealtimeEvents(previous, events) {
+  let nextMessages = previous;
 
-function renderTerminalPromptIcon() {
-  return (
-    <svg width="20" height="20" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <rect width="48" height="48" fill="white" fillOpacity="0.01" />
-      <rect
-        x="4"
-        y="8"
-        width="40"
-        height="32"
-        rx="2"
-        fill="#09140d"
-        stroke="#4f7a63"
-        strokeWidth="2"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M12 18L19 24L12 30"
-        stroke="#8fd2ad"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M23 32H36"
-        stroke="#8fd2ad"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
+  for (const event of events) {
+    if (event.type === "DELETE") {
+      nextMessages = removeMessage(nextMessages, event.id);
+      continue;
+    }
+
+    if (event.message) {
+      nextMessages = mergeMessages(nextMessages, [event.message]);
+    }
+  }
+
+  return nextMessages;
 }
 
 function getViewportMetrics(viewport) {
@@ -136,12 +125,36 @@ function clampPan(nextPan, zoom, boardHeight, viewportWidth, viewportHeight) {
   return { x, y };
 }
 
+function escapeCsvValue(value) {
+  const normalized = value === null || value === undefined ? "" : String(value);
+  return `"${normalized.replace(/"/g, "\"\"")}"`;
+}
+
+function buildCsvFromRows(rows) {
+  if (!rows.length) return "";
+
+  const columns = Array.from(
+    rows.reduce((set, row) => {
+      Object.keys(row ?? {}).forEach((key) => set.add(key));
+      return set;
+    }, new Set())
+  );
+
+  const header = columns.map((column) => escapeCsvValue(column)).join(",");
+  const body = rows.map((row) =>
+    columns.map((column) => escapeCsvValue(row?.[column])).join(",")
+  );
+
+  return [header, ...body].join("\r\n");
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Wall() {
   const [messages, setMessages]       = useState([]);
   const [isLoading, setIsLoading]     = useState(true);
-  const [status, setStatus]           = useState(null);
+  const [connectionStatus, setConnectionStatus] = useState(null);
+  const [schemaStatus, setSchemaStatus] = useState(null);
   const [boardHeight, setBoardHeight] = useState(0);
   const [placementReady, setPlacementReady] = useState(0);
   const [userPositions, setUserPositions]   = useState(() => loadSavedPositions());
@@ -152,6 +165,10 @@ export default function Wall() {
   const [isPanning, setIsPanning] = useState(false);
   const [zoom, setZoom]         = useState(1);
   const [showLoginDialog, setShowLoginDialog] = useState(false);
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminSession, setAdminSession] = useState(null);
+  const [adminNotice, setAdminNotice] = useState(null);
+  const [isAdminBusy, setIsAdminBusy] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const panRef                  = useRef({ x: 0, y: 0 });
@@ -164,6 +181,11 @@ export default function Wall() {
   const laneHeightsRef  = useRef([]);
   const boardRef        = useRef(null);
   const dragRef         = useRef(null);
+  const realtimeQueueRef = useRef([]);
+  const realtimeTimerRef = useRef(null);
+  const fallbackPollRef = useRef(null);
+
+  const status = connectionStatus ?? schemaStatus;
 
   useEffect(() => {
     setDocumentHead("CCS Freedom Screen", terminalIcon);
@@ -174,32 +196,117 @@ export default function Wall() {
 
   // ── Supabase fetch + realtime ──────────────────────────────────────────────
 
+  const fetchMessages = useCallback(async (showSpinner) => {
+    if (showSpinner) setIsLoading(true);
+    const query = await fetchMessagesWithFallback(MAX_MESSAGES);
+
+    if (query.error) {
+      setConnectionStatus((current) => current ?? "wall offline; retrying with polling fallback");
+      setIsLoading(false);
+      return;
+    }
+
+    const supportsLanguage = query.select?.includes("language");
+    const supportsPlacement = query.select?.includes("pos_x");
+    const nextMessages = capMessages((query.data ?? []).filter((message) => !message.is_deleted));
+
+    setMessages(nextMessages);
+    if (!supportsLanguage) {
+      setSchemaStatus("wall is using legacy schema; run the Supabase SQL migrations to restore entry language icons");
+    } else if (!supportsPlacement) {
+      setSchemaStatus("wall is using compatibility placement mode");
+    } else {
+      setSchemaStatus(null);
+    }
+    setIsLoading(false);
+  }, []);
+
+  const stopFallbackPolling = useCallback(() => {
+    if (!fallbackPollRef.current || typeof window === "undefined") return;
+    window.clearInterval(fallbackPollRef.current);
+    fallbackPollRef.current = null;
+  }, []);
+
+  const startFallbackPolling = useCallback(() => {
+    if (fallbackPollRef.current || typeof window === "undefined") return;
+
+    fallbackPollRef.current = window.setInterval(() => {
+      void fetchMessages(false);
+    }, REALTIME_FALLBACK_POLL_MS);
+  }, [fetchMessages]);
+
+  const flushRealtimeQueue = useCallback(() => {
+    realtimeTimerRef.current = null;
+
+    if (realtimeQueueRef.current.length === 0) {
+      return;
+    }
+
+    const nextBatch = realtimeQueueRef.current.splice(0, REALTIME_BATCH_SIZE);
+    setMessages((previous) => applyRealtimeEvents(previous, nextBatch));
+
+    if (realtimeQueueRef.current.length > 0 && typeof window !== "undefined") {
+      realtimeTimerRef.current = window.setTimeout(flushRealtimeQueue, REALTIME_PROCESS_INTERVAL_MS);
+    }
+  }, []);
+
+  const queueRealtimeEvent = useCallback((event) => {
+    realtimeQueueRef.current.push(event);
+
+    if (!realtimeTimerRef.current && typeof window !== "undefined") {
+      realtimeTimerRef.current = window.setTimeout(flushRealtimeQueue, REALTIME_PROCESS_INTERVAL_MS);
+    }
+  }, [flushRealtimeQueue]);
+
   useEffect(() => {
     void fetchMessages(true);
-    const refreshInterval = window.setInterval(() => void fetchMessages(false), 45000);
     const handleVisibility = () => {
       if (document.visibilityState === "visible") void fetchMessages(false);
     };
+
     document.addEventListener("visibilitychange", handleVisibility);
     const channel = supabase
-      .channel("public:messages-feed")
+      .channel("public:messages")
       .on("postgres_changes", { event: "*", schema: "public", table: "messages" }, (payload) => {
         if (payload.eventType === "DELETE") {
-          setMessages((prev) => removeMessage(prev, payload.old.id));
+          queueRealtimeEvent({ type: "DELETE", id: payload.old.id });
           return;
         }
-        setMessages((prev) => mergeMessages(prev, [payload.new]));
+
+        if (payload.new?.is_deleted) {
+          queueRealtimeEvent({ type: "DELETE", id: payload.new.id });
+          return;
+        }
+
+        queueRealtimeEvent({
+          type: payload.eventType,
+          message: payload.new,
+        });
       })
-      .subscribe((s) => {
-        if (s === "CHANNEL_ERROR") setStatus("realtime offline; polling fallback active");
-        if (s === "SUBSCRIBED")    setStatus(null);
+      .subscribe((state) => {
+        if (state === "SUBSCRIBED") {
+          stopFallbackPolling();
+          setConnectionStatus(null);
+          void fetchMessages(false);
+        }
+
+        if (state === "CHANNEL_ERROR" || state === "TIMED_OUT" || state === "CLOSED") {
+          startFallbackPolling();
+          setConnectionStatus("realtime offline; polling fallback active");
+        }
       });
+
     return () => {
-      window.clearInterval(refreshInterval);
+      stopFallbackPolling();
+      if (realtimeTimerRef.current && typeof window !== "undefined") {
+        window.clearTimeout(realtimeTimerRef.current);
+        realtimeTimerRef.current = null;
+      }
+      realtimeQueueRef.current = [];
       document.removeEventListener("visibilitychange", handleVisibility);
       void supabase.removeChannel(channel);
     };
-  }, []);
+  }, [fetchMessages, queueRealtimeEvent, startFallbackPolling, stopFallbackPolling]);
 
   const applyView = useCallback((nextPan, nextZoom) => {
     const { width, height } = getViewportMetrics(viewportRef.current);
@@ -313,27 +420,35 @@ export default function Wall() {
     for (const message of messages) {
       if (placementsRef.current[message.id]) continue;
 
-      const seed        = hashSeed(`${message.id}-${message.created_at}`);
-      const lane        = seed % laneCount;
       const bodyLines   = Math.min(3, Math.ceil(message.text.length / 40));
       const cardHeight  = 94 + bodyLines * 18;
-      const cardWidth   = BASE_NOTE_WIDTH;
-      const noteWidthPct  = (cardWidth / WORLD_WIDTH) * 100;
-      const laneWidthPct  = 100 / laneCount;
-      // Center the lanes around 50% (middle of the canvas)
-      const centerOffset = (50 - (100 / 2)) / 2;
-      const leftStartPct  = centerOffset + (lane * laneWidthPct);
-      const jitterSpan    = Math.max(0.5, laneWidthPct - noteWidthPct - 1);
-      const jitter        = (((seed >> 4) % 100) / 100) * jitterSpan;
-      const leftPct       = Math.min(98 - noteWidthPct, leftStartPct + jitter);
-      
-      // Ensure cards start below the safe top area
-      const minTopPx = SAFE_AREA_TOP_HEIGHT + 10;
-      const topPx    = Math.max(minTopPx, laneHeightsRef.current[lane] + ((seed >> 8) % 18));
-      const rotationDeg   = ((seed % 11) - 5) * 0.8;
+      const hasStoredPlacement =
+        Number.isFinite(message.pos_x) &&
+        Number.isFinite(message.pos_y) &&
+        Number.isFinite(message.rotation);
 
-      laneHeightsRef.current[lane] = topPx + cardHeight + 20 + ((seed >> 10) % 18);
-      placementsRef.current[message.id] = { leftPct, topPx, cardHeight, rotationDeg };
+      if (hasStoredPlacement) {
+        placementsRef.current[message.id] = {
+          leftPct: message.pos_x,
+          topPx: message.pos_y,
+          cardHeight,
+          rotationDeg: message.rotation,
+        };
+        continue;
+      }
+
+      const generatedPlacement = generateMessagePlacement(`${message.id}-${message.created_at}`, message.text);
+      const lane = Math.min(laneCount - 1, Math.max(0, Math.floor((generatedPlacement.pos_x / 100) * laneCount)));
+      const minTopPx = SAFE_AREA_TOP_HEIGHT + 10;
+      const topPx = Math.max(minTopPx, Math.max(laneHeightsRef.current[lane] ?? minTopPx, generatedPlacement.pos_y));
+
+      laneHeightsRef.current[lane] = topPx + cardHeight + 20;
+      placementsRef.current[message.id] = {
+        leftPct: generatedPlacement.pos_x,
+        topPx,
+        cardHeight,
+        rotationDeg: generatedPlacement.rotation,
+      };
     }
 
     const nextHeight = messages.reduce((max, m) => {
@@ -379,6 +494,142 @@ export default function Wall() {
       })
       .filter(Boolean);
   }, [messages, placementReady, userPositions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleAdminLogin = useCallback(async () => {
+    setIsAdminBusy(true);
+    setAdminNotice(null);
+
+    const result = await verifyAdminPassword(adminPassword);
+
+    setIsAdminBusy(false);
+
+    if (result.error || !result.isValid) {
+      setAdminSession(null);
+      setAdminNotice({
+        tone: "error",
+        message: result.error?.message ?? "The admin password was not accepted.",
+      });
+      return;
+    }
+
+    setAdminSession({
+      password: adminPassword.trim(),
+      authenticatedAt: Date.now(),
+    });
+    setAdminNotice({
+      tone: "success",
+      message: "Admin tools unlocked for this session.",
+    });
+  }, [adminPassword]);
+
+  const handleAdminLogout = useCallback(() => {
+    setAdminSession(null);
+    setAdminPassword("");
+    setAdminNotice({
+      tone: "success",
+      message: "Admin session closed.",
+    });
+  }, []);
+
+  const handleAdminExportCsv = useCallback(() => {
+    if (!adminSession?.password) {
+      setAdminNotice({
+        tone: "error",
+        message: "Log in as admin first to export wall data.",
+      });
+      return;
+    }
+
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    setIsAdminBusy(true);
+    setAdminNotice(null);
+
+    void (async () => {
+      const exportQuery = await fetchAllMessagesForExport();
+
+      setIsAdminBusy(false);
+
+      if (exportQuery.error) {
+        setAdminNotice({
+          tone: "error",
+          message: exportQuery.error.message,
+        });
+        return;
+      }
+
+      const rows = exportQuery.data ?? [];
+
+      if (rows.length === 0) {
+        setAdminNotice({
+          tone: "error",
+          message: "There are no database rows to export right now.",
+        });
+        return;
+      }
+
+      const csv = buildCsvFromRows(rows);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+      const url = window.URL.createObjectURL(blob);
+      const link = window.document.createElement("a");
+      link.href = url;
+      link.download = `ccs-freedom-screen-data-${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+
+      setAdminNotice({
+        tone: "success",
+        message: `Downloaded ${rows.length} database rows as CSV.`,
+      });
+    })();
+  }, [adminSession]);
+
+  const handleAdminDeleteAll = useCallback(async () => {
+    if (!adminSession?.password) {
+      setAdminNotice({
+        tone: "error",
+        message: "Log in as admin first to delete entries.",
+      });
+      return;
+    }
+
+    if (typeof window !== "undefined") {
+      const shouldDelete = window.confirm("Delete every wall entry? This cannot be undone.");
+      if (!shouldDelete) return;
+    }
+
+    setIsAdminBusy(true);
+    setAdminNotice(null);
+
+    const result = await deleteAllMessagesWithAdminPassword(adminSession.password);
+
+    setIsAdminBusy(false);
+
+    if (result.error) {
+      setAdminNotice({
+        tone: "error",
+        message: result.error.message,
+      });
+      return;
+    }
+
+    placementsRef.current = {};
+    laneHeightsRef.current = [];
+    realtimeQueueRef.current = [];
+    setMessages([]);
+    setSelectedEntry(null);
+    setUserPositions({});
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(POSITIONS_STORAGE_KEY);
+    }
+
+    setAdminNotice({
+      tone: "success",
+      message: `Deleted ${result.deletedCount} wall entries.`,
+    });
+  }, [adminSession]);
 
   // ── Canvas pan handlers ────────────────────────────────────────────────────
 
@@ -511,30 +762,6 @@ export default function Wall() {
     setDraggingId(null);
   };
 
-  // ── Fetch helper ───────────────────────────────────────────────────────────
-
-  const fetchMessages = async (showSpinner) => {
-    if (showSpinner) setIsLoading(true);
-    const extendedQuery = await supabase
-      .from("messages")
-      .select("id,text,created_at,language,full_code,is_deleted")
-      .order("created_at", { ascending: false })
-      .limit(MAX_MESSAGES);
-    if (!extendedQuery.error) {
-      setMessages(capMessages((extendedQuery.data ?? []).filter((m) => !m.is_deleted)));
-      setStatus(null);
-      setIsLoading(false);
-      return;
-    }
-    const fallbackQuery = await supabase
-      .from("messages").select("id,text,created_at")
-      .order("created_at", { ascending: false }).limit(MAX_MESSAGES);
-    if (fallbackQuery.error) { setStatus("wall offline"); setIsLoading(false); return; }
-    setMessages(capMessages(fallbackQuery.data ?? []));
-    setStatus(null);
-    setIsLoading(false);
-  };
-
   // ── Minimap data ───────────────────────────────────────────────────────────
   // Shows a tiny dot-map of card positions so users can orient themselves
 
@@ -589,6 +816,18 @@ export default function Wall() {
 
   return (
     <main style={styles.page}>
+      <style>{`
+        @keyframes wallSpawn {
+          from {
+            opacity: 0;
+            transform: scale(0.8);
+          }
+          to {
+            opacity: 1;
+            transform: scale(1);
+          }
+        }
+      `}</style>
       {/* ── Viewport — fixed window into the world ── */}
       <section
         ref={viewportRef}
@@ -623,57 +862,55 @@ export default function Wall() {
         {/* ── HUD — fixed overlays, pointer-events selectively on ── */}
         <div style={styles.hud}>
           {/* Control buttons at top */}
-          <div style={styles.buttonBar}>
-            <button
-              style={styles.controlBtn}
-              onClick={resetView}
-              title="Reset view"
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M3 5V3H5M3 19V21H5M21 3V5H19M21 21V19H19M9 3H3V9M15 3H21V9M3 15V21H9M21 15V21H15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+            <div style={styles.buttonBar}>
+              <button
+                style={styles.controlBtn}
+                onClick={resetView}
+                title="Reset view"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <img src={resetViewIcon} alt="" aria-hidden="true" style={styles.controlIcon} />
+              </button>
 
-            <button
-              style={styles.controlBtn}
-              onClick={handleZoomIn}
-              title="Zoom in"
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fillRule="evenodd" clipRule="evenodd" d="M4 11C4 7.13401 7.13401 4 11 4C14.866 4 18 7.13401 18 11C18 14.866 14.866 18 11 18C7.13401 18 4 14.866 4 11ZM11 2C6.02944 2 2 6.02944 2 11C2 15.9706 6.02944 20 11 20C13.125 20 15.078 19.2635 16.6177 18.0319L20.2929 21.7071C20.6834 22.0976 21.3166 22.0976 21.7071 21.7071C22.0976 21.3166 22.0976 20.6834 21.7071 20.2929L18.0319 16.6177C19.2635 15.078 20 13.125 20 11C20 6.02944 15.9706 2 11 2Z" fill="currentColor"/>
-                <path fillRule="evenodd" clipRule="evenodd" d="M10 14C10 14.5523 10.4477 15 11 15C11.5523 15 12 14.5523 12 14V12H14C14.5523 12 15 11.5523 15 11C15 10.4477 14.5523 10 14 10H12V8C12 7.44772 11.5523 7 11 7C10.4477 7 10 7.44772 10 8V10H8C7.44772 10 7 10.4477 7 11C7 11.5523 7.44772 12 8 12H10V14Z" fill="currentColor"/>
-              </svg>
-            </button>
+              <button
+                style={styles.controlBtn}
+                onClick={handleZoomIn}
+                title="Zoom in"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <img src={zoomInIcon} alt="" aria-hidden="true" style={styles.controlIcon} />
+              </button>
 
-            <button
-              style={styles.controlBtn}
-              onClick={handleZoomOut}
-              title="Zoom out"
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path fillRule="evenodd" clipRule="evenodd" d="M4 11C4 7.13401 7.13401 4 11 4C14.866 4 18 7.13401 18 11C18 14.866 14.866 18 11 18C7.13401 18 4 14.866 4 11ZM11 2C6.02944 2 2 6.02944 2 11C2 15.9706 6.02944 20 11 20C13.125 20 15.078 19.2635 16.6177 18.0319L20.2929 21.7071C20.6834 22.0976 21.3166 22.0976 21.7071 21.7071C22.0976 21.3166 22.0976 20.6834 21.7071 20.2929L18.0319 16.6177C19.2635 15.078 20 13.125 20 11C20 6.02944 15.9706 2 11 2Z" fill="currentColor"/>
-                <path fillRule="evenodd" clipRule="evenodd" d="M7 11C7 10.4477 7.44772 10 8 10H14C14.5523 10 15 10.4477 15 11C15 11.5523 14.5523 12 14 12H8C7.44772 12 7 11.5523 7 11Z" fill="currentColor"/>
-              </svg>
-            </button>
+              <button
+                style={styles.controlBtn}
+                onClick={handleZoomOut}
+                title="Zoom out"
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <img src={zoomOutIcon} alt="" aria-hidden="true" style={styles.controlIcon} />
+              </button>
 
-            <button
-              style={styles.controlBtn}
-              onClick={() => setShowLoginDialog(true)}
-              title="Admin login"
-              onPointerDown={(e) => e.stopPropagation()}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M13 2C10.2386 2 8 4.23858 8 7C8 7.55228 8.44772 8 9 8C9.55228 8 10 7.55228 10 7C10 5.34315 11.3431 4 13 4H17C18.6569 4 20 5.34315 20 7V17C20 18.6569 18.6569 20 17 20H13C11.3431 20 10 18.6569 10 17C10 16.4477 9.55228 16 9 16C8.44772 16 8 16.4477 8 17C8 19.7614 10.2386 22 13 22H17C19.7614 22 22 19.7614 22 17V7C22 4.23858 19.7614 2 17 2H13Z" fill="currentColor"/>
-                <path d="M3 11C2.44772 11 2 11.4477 2 12C2 12.5523 2.44772 13 3 13H11.2821C11.1931 13.1098 11.1078 13.2163 11.0271 13.318C10.7816 13.6277 10.5738 13.8996 10.427 14.0945C10.3536 14.1921 10.2952 14.2705 10.255 14.3251L10.2084 14.3884L10.1959 14.4055L10.1915 14.4115C10.1914 14.4116 10.191 14.4122 11 15L10.1915 14.4115C9.86687 14.8583 9.96541 15.4844 10.4122 15.809C10.859 16.1336 11.4843 16.0346 11.809 15.5879L11.8118 15.584L11.822 15.57L11.8638 15.5132C11.9007 15.4632 11.9553 15.3897 12.0247 15.2975C12.1637 15.113 12.3612 14.8546 12.5942 14.5606C13.0655 13.9663 13.6623 13.2519 14.2071 12.7071L14.9142 12L14.2071 11.2929C13.6623 10.7481 13.0655 10.0337 12.5942 9.43937C12.3612 9.14542 12.1637 8.88702 12.0247 8.7025C11.9553 8.61033 11.9007 8.53682 11.8638 8.48679L11.822 8.43002L11.8118 8.41602L11.8095 8.41281C11.4848 7.96606 10.859 7.86637 10.4122 8.19098C9.96541 8.51561 9.86636 9.14098 10.191 9.58778L11 9C10.191 9.58778 10.1909 9.58773 10.191 9.58778L10.1925 9.58985L10.1959 9.59454L10.2084 9.61162L10.255 9.67492C10.2952 9.72946 10.3536 9.80795 10.427 9.90549C10.5738 10.1004 10.7816 10.3723 11.0271 10.682C11.1078 10.7837 11.1931 10.8902 11.2821 11H3Z" fill="currentColor"/>
-              </svg>
-            </button>
-          </div>
+              <button
+                style={{
+                  ...styles.controlBtn,
+                  borderColor: adminSession ? "#2d8b57" : "#1a3d2a",
+                  boxShadow: adminSession ? "0 0 0 1px rgba(45, 139, 87, 0.35)" : "none",
+                }}
+                onClick={() => setShowLoginDialog(true)}
+                title={adminSession ? "Admin tools unlocked" : "Admin login"}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <img src={loginIcon} alt="" aria-hidden="true" style={styles.controlIcon} />
+              </button>
+            </div>
 
           <div style={styles.promptLine}>
-            {renderTerminalPromptIcon()}
+            <img
+              src={terminalIcon}
+              alt=""
+              aria-hidden="true"
+              style={styles.promptIcon}
+            />
           </div>
           <div style={styles.zoomLevel}>zoom {Math.round(zoom * 100)}%</div>
           {status && <div style={styles.statusLine}>{status}</div>}
@@ -790,6 +1027,7 @@ export default function Wall() {
                     ...styles.cardWrapper,
                     borderWidth: scaledNoteStyles.borderWidth,
                     borderRadius: scaledNoteStyles.noteRadius,
+                    animation: draggingId === message.id ? "none" : "wallSpawn 0.3s ease",
                   }}>
                     <div style={{
                       ...styles.cardHeader,
@@ -802,7 +1040,7 @@ export default function Wall() {
                         width: scaledNoteStyles.iconSize,
                         height: scaledNoteStyles.iconSize,
                       }}>
-                        <LanguageIcon language={langConfig.key} size={16 * zoom} />
+                        <LanguageIcon language={message.language || langConfig.key} size={scaledNoteStyles.iconSize} />
                       </div>
                       <span style={{ ...styles.filename, fontSize: scaledNoteStyles.filenameFontSize }}>{langConfig.fileName}</span>
                       <span style={{ ...styles.timestamp, fontSize: scaledNoteStyles.timestampFontSize }}>[{timeLabel}]</span>
@@ -827,9 +1065,14 @@ export default function Wall() {
       {/* ── Login Dialog ── */}
       {showLoginDialog && (
         <div style={styles.dialogOverlay} onClick={() => setShowLoginDialog(false)}>
-          <div style={styles.dialogBox} onClick={(e) => e.stopPropagation()}>
+          <div style={{ ...styles.dialogBox, ...styles.adminDialogBox }} onClick={(e) => e.stopPropagation()}>
             <div style={styles.dialogHeader}>
-              <h2 style={styles.dialogTitle}>Admin Login</h2>
+              <div>
+                <h2 style={styles.dialogTitle}>Admin Tools</h2>
+                <div style={styles.detailSubtitle}>
+                  {adminSession ? "session unlocked" : "login required"}
+                </div>
+              </div>
               <button
                 style={styles.closeBtn}
                 onClick={() => setShowLoginDialog(false)}
@@ -839,7 +1082,99 @@ export default function Wall() {
               </button>
             </div>
             <div style={styles.dialogContent}>
-              <p style={styles.dialogText}>Admin login functionality will be implemented here.</p>
+              <div style={styles.adminSummaryRow}>
+                <div style={styles.adminSummaryCard}>
+                  <div style={styles.adminSummaryLabel}>entries</div>
+                  <div style={styles.adminSummaryValue}>{messages.length}</div>
+                </div>
+                <div style={styles.adminSummaryCard}>
+                  <div style={styles.adminSummaryLabel}>realtime</div>
+                  <div style={styles.adminSummaryValue}>{connectionStatus ? "fallback" : "live"}</div>
+                </div>
+                <div style={styles.adminSummaryCard}>
+                  <div style={styles.adminSummaryLabel}>session</div>
+                  <div style={styles.adminSummaryValue}>{adminSession ? "open" : "locked"}</div>
+                </div>
+              </div>
+
+              <p style={styles.dialogText}>
+                Use the admin password to unlock the destructive action. Exporting saves the
+                raw wall table data as a CSV file.
+              </p>
+
+              <label style={styles.adminField}>
+                <span style={styles.adminFieldLabel}>Admin Password</span>
+                <input
+                  type="password"
+                  value={adminPassword}
+                  onChange={(event) => setAdminPassword(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !isAdminBusy) {
+                      event.preventDefault();
+                      void handleAdminLogin();
+                    }
+                  }}
+                  placeholder="Enter the configured admin password"
+                  style={styles.adminInput}
+                />
+              </label>
+
+              {adminNotice && (
+                <div
+                  style={{
+                    ...styles.adminNotice,
+                    borderColor: adminNotice.tone === "error" ? "rgba(255, 107, 107, 0.35)" : "rgba(45, 139, 87, 0.35)",
+                    color: adminNotice.tone === "error" ? "#ffb3b3" : "#bff0cf",
+                  }}
+                >
+                  {adminNotice.message}
+                </div>
+              )}
+
+              <div style={styles.adminActionGrid}>
+                <button
+                  type="button"
+                  style={styles.adminPrimaryBtn}
+                  onClick={() => void handleAdminLogin()}
+                  disabled={isAdminBusy}
+                >
+                  {isAdminBusy ? "Checking..." : adminSession ? "Re-verify Password" : "Unlock Admin Tools"}
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.adminSecondaryBtn,
+                    opacity: adminSession ? 1 : 0.55,
+                  }}
+                  onClick={handleAdminExportCsv}
+                  disabled={!adminSession || isAdminBusy}
+                >
+                  Export Wall Data CSV
+                </button>
+                <button
+                  type="button"
+                  style={{
+                    ...styles.adminDangerBtn,
+                    opacity: adminSession ? 1 : 0.55,
+                  }}
+                  onClick={() => void handleAdminDeleteAll()}
+                  disabled={!adminSession || isAdminBusy}
+                >
+                  Delete All Entries
+                </button>
+                <button
+                  type="button"
+                  style={styles.adminSecondaryBtn}
+                  onClick={handleAdminLogout}
+                  disabled={!adminSession || isAdminBusy}
+                >
+                  Logout
+                </button>
+              </div>
+
+              <div style={styles.adminFootnote}>
+                Run `supabase/messages_security.sql` after updating the admin password seed there.
+              </div>
             </div>
           </div>
         </div>
@@ -916,6 +1251,11 @@ const styles = {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
+  },
+  promptIcon: {
+    width: "20px",
+    height: "20px",
+    display: "block",
   },
   dragHint: {
     position:      "absolute",
@@ -1072,6 +1412,12 @@ const styles = {
     fontSize: "0px",
     lineHeight: 1,
   },
+  controlIcon: {
+    width: "16px",
+    height: "16px",
+    display: "block",
+    pointerEvents: "none",
+  },
   dialogOverlay: {
     position: "fixed",
     inset: 0,
@@ -1091,6 +1437,9 @@ const styles = {
     boxShadow: "0 0 32px rgba(0, 255, 136, 0.15)",
     pointerEvents: "all",
     overflow: "hidden",
+  },
+  adminDialogBox: {
+    width: "min(560px, calc(100vw - 32px))",
   },
   entryDialogBox: {
     width: "min(760px, calc(100vw - 32px))",
@@ -1131,6 +1480,109 @@ const styles = {
     margin: 0,
     fontSize: "13px",
     color: "#4f7a63",
+    lineHeight: 1.6,
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminSummaryRow: {
+    display: "grid",
+    gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
+    gap: "10px",
+    marginBottom: "18px",
+  },
+  adminSummaryCard: {
+    border: "1px solid #173b24",
+    borderRadius: "8px",
+    padding: "12px",
+    background: "rgba(5, 16, 8, 0.8)",
+  },
+  adminSummaryLabel: {
+    fontSize: "10px",
+    color: "#5c8f73",
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+    marginBottom: "8px",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminSummaryValue: {
+    fontSize: "18px",
+    color: "#c7e7d3",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminField: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    marginTop: "18px",
+  },
+  adminFieldLabel: {
+    fontSize: "11px",
+    color: "#5c8f73",
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminInput: {
+    width: "100%",
+    minHeight: "44px",
+    padding: "12px 14px",
+    borderRadius: "8px",
+    border: "1px solid #173b24",
+    background: "#051008",
+    color: "#d6f5e0",
+    outline: "none",
+    fontSize: "13px",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminNotice: {
+    marginTop: "14px",
+    padding: "12px 14px",
+    borderRadius: "8px",
+    border: "1px solid",
+    background: "rgba(5, 16, 8, 0.8)",
+    fontSize: "12px",
+    lineHeight: 1.6,
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminActionGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+    gap: "10px",
+    marginTop: "16px",
+  },
+  adminPrimaryBtn: {
+    minHeight: "42px",
+    border: "1px solid #2d8b57",
+    background: "#0f3d24",
+    color: "#d6f5e0",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminSecondaryBtn: {
+    minHeight: "42px",
+    border: "1px solid #173b24",
+    background: "#07130b",
+    color: "#c7e7d3",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminDangerBtn: {
+    minHeight: "42px",
+    border: "1px solid #6a2626",
+    background: "#2a0d0d",
+    color: "#ffb3b3",
+    borderRadius: "8px",
+    cursor: "pointer",
+    fontSize: "12px",
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+  },
+  adminFootnote: {
+    marginTop: "14px",
+    fontSize: "11px",
+    color: "#5c8f73",
     lineHeight: 1.6,
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
   },
