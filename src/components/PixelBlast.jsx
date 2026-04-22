@@ -269,6 +269,8 @@ const PixelBlast = ({
   className,
   style,
   antialias = true,
+  interactive = true,
+  maxPixelRatio = 2,
   patternScale = 2,
   patternDensity = 1,
   liquid = false,
@@ -281,7 +283,9 @@ const PixelBlast = ({
   rippleSpeed = 0.3,
   liquidWobbleSpeed = 4.5,
   autoPauseOffscreen = true,
+  paused = false,
   speed = 0.5,
+  targetFps = 0,
   transparent = true,
   edgeFade = 0.5,
   noiseAmount = 0
@@ -289,8 +293,30 @@ const PixelBlast = ({
   const containerRef = useRef(null);
   const visibilityRef = useRef({ visible: true });
   const speedRef = useRef(speed);
+  const pausedRef = useRef(paused);
+  const targetFrameMsRef = useRef(targetFps > 0 ? 1000 / targetFps : 0);
   const threeRef = useRef(null);
   const prevConfigRef = useRef(null);
+
+  useEffect(() => {
+    pausedRef.current = paused;
+  }, [paused]);
+
+  useEffect(() => {
+    targetFrameMsRef.current = targetFps > 0 ? 1000 / targetFps : 0;
+  }, [targetFps]);
+
+  useEffect(() => {
+    if (!autoPauseOffscreen || typeof document === 'undefined') return undefined;
+
+    const handleVisibility = () => {
+      visibilityRef.current.visible = document.visibilityState === 'visible';
+    };
+
+    handleVisibility();
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [autoPauseOffscreen]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -330,7 +356,7 @@ const PixelBlast = ({
       });
       renderer.domElement.style.width = '100%';
       renderer.domElement.style.height = '100%';
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
       container.appendChild(renderer.domElement);
       if (transparent) renderer.setClearAlpha(0);
       else renderer.setClearColor(0x000000, 1);
@@ -374,6 +400,7 @@ const PixelBlast = ({
       const setSize = () => {
         const w = container.clientWidth || 1;
         const h = container.clientHeight || 1;
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxPixelRatio));
         renderer.setSize(w, h, false);
         uniforms.uResolution.value.set(renderer.domElement.width, renderer.domElement.height);
         if (threeRef.current?.composer)
@@ -461,15 +488,24 @@ const PixelBlast = ({
         touch.addTouch({ x: fx / w, y: fy / h });
       };
 
-      renderer.domElement.addEventListener('pointerdown', onPointerDown, { passive: true });
-      renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
+      if (interactive) {
+        renderer.domElement.addEventListener('pointerdown', onPointerDown, { passive: true });
+        renderer.domElement.addEventListener('pointermove', onPointerMove, { passive: true });
+      }
 
       let raf = 0;
+      let lastRenderAt = 0;
       const animate = timestamp => {
-        if (autoPauseOffscreen && !visibilityRef.current.visible) {
+        if (pausedRef.current || (autoPauseOffscreen && !visibilityRef.current.visible)) {
           raf = requestAnimationFrame(animate);
           return;
         }
+        const targetFrameMs = targetFrameMsRef.current;
+        if (targetFrameMs > 0 && timestamp - lastRenderAt < targetFrameMs) {
+          raf = requestAnimationFrame(animate);
+          return;
+        }
+        lastRenderAt = timestamp;
         timer.update(timestamp);
         uniforms.uTime.value = timeOffset + timer.getElapsed() * speedRef.current;
         if (liquidEffect) liquidEffect.uniforms.get('uTime').value = uniforms.uTime.value;
@@ -493,7 +529,8 @@ const PixelBlast = ({
       threeRef.current = {
         renderer, scene, camera, material, timer,
         clickIx: 0, uniforms, resizeObserver: ro,
-        raf, quad, timeOffset, composer, touch, liquidEffect
+        raf, quad, timeOffset, composer, touch, liquidEffect,
+        onPointerDown, onPointerMove, interactive
       };
     } else {
       const t = threeRef.current;
@@ -527,6 +564,10 @@ const PixelBlast = ({
       const t = threeRef.current;
       t.resizeObserver?.disconnect();
       cancelAnimationFrame(t.raf);
+      if (t.interactive) {
+        t.renderer.domElement.removeEventListener('pointerdown', t.onPointerDown);
+        t.renderer.domElement.removeEventListener('pointermove', t.onPointerMove);
+      }
       t.timer?.dispose();
       t.quad?.geometry.dispose();
       t.material.dispose();
@@ -538,10 +579,10 @@ const PixelBlast = ({
       threeRef.current = null;
     };
   }, [
-    antialias, liquid, noiseAmount, pixelSize, patternScale, patternDensity,
+    antialias, interactive, liquid, maxPixelRatio, noiseAmount, pixelSize, patternScale, patternDensity,
     enableRipples, rippleIntensityScale, rippleThickness, rippleSpeed,
     pixelSizeJitter, edgeFade, transparent, liquidStrength, liquidRadius,
-    liquidWobbleSpeed, autoPauseOffscreen, variant, color, speed
+    liquidWobbleSpeed, autoPauseOffscreen, paused, targetFps, variant, color, speed
   ]);
 
   return (
