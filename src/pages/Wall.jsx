@@ -263,6 +263,7 @@ export default function Wall() {
   const [isAdminBusy, setIsAdminBusy] = useState(false);
   const [selectedEntry, setSelectedEntry] = useState(null);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [isCoarsePointer, setIsCoarsePointer] = useState(false);
   // ── Minimap glow tracking ──────────────────────────────────────────────────
   const [minimapGlowId, setMinimapGlowId] = useState(null);
   const [highlightCardId, setHighlightCardId] = useState(null);
@@ -297,6 +298,20 @@ export default function Wall() {
 
   useEffect(() => {
     setDocumentHead("CCS Freedom Screen", terminalIcon);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return undefined;
+
+    const mediaQuery = window.matchMedia("(pointer: coarse)");
+    const updatePointerMode = () => setIsCoarsePointer(mediaQuery.matches);
+
+    updatePointerMode();
+    mediaQuery.addEventListener?.("change", updatePointerMode);
+
+    return () => {
+      mediaQuery.removeEventListener?.("change", updatePointerMode);
+    };
   }, []);
 
   // ── Supabase fetch + realtime ──────────────────────────────────────────────
@@ -762,6 +777,7 @@ export default function Wall() {
 
   // ── Note drag handlers ─────────────────────────────────────────────────────
   const handlePointerDown = (e, id, currentLeftPct, currentTopPx) => {
+    if (isCoarsePointer) return;
     e.preventDefault();
     e.stopPropagation();
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -774,6 +790,7 @@ export default function Wall() {
   };
 
   const handlePointerMove = (e, id) => {
+    if (isCoarsePointer) return;
     const drag = dragRef.current;
     if (!drag || drag.id !== id) return;
     const deltaX = e.clientX - drag.startPointerX;
@@ -790,6 +807,7 @@ export default function Wall() {
   };
 
   const handlePointerUp = (e, message, entry) => {
+    if (isCoarsePointer) return;
     const drag = dragRef.current;
     if (!drag || drag.id !== message.id) return;
     const deltaLeftPct = ((e.clientX - drag.startPointerX) / (drag.boardWidth * zoomRef.current)) * 100;
@@ -815,6 +833,7 @@ export default function Wall() {
   };
 
   const handlePointerCancel = (_e, id) => {
+    if (isCoarsePointer) return;
     if (dragRef.current?.id === id) dragRef.current = null;
     setDraggingId(null);
   };
@@ -1091,8 +1110,8 @@ export default function Wall() {
                       top:        `${placement.topPx * zoom}px`,
                       width:      scaledNoteStyles.noteWidth,
                       transform:  `rotate(${placement.rotationDeg}deg)`,
-                      cursor:     draggingId === message.id ? "grabbing" : "grab",
-                      userSelect: "none", touchAction: "none",
+                      cursor:     isCoarsePointer ? "pointer" : draggingId === message.id ? "grabbing" : "grab",
+                      userSelect: "none", touchAction: isCoarsePointer ? "manipulation" : "none",
                       zIndex:     draggingId === message.id ? 10 : 1,
                       transition: draggingId === message.id ? "none" : "box-shadow 120ms ease",
                       boxShadow:  draggingId === message.id
@@ -1104,6 +1123,7 @@ export default function Wall() {
                     onPointerMove={(e) => handlePointerMove(e, message.id)}
                     onPointerUp={(e)   => handlePointerUp(e, message, entry)}
                     onPointerCancel={(e) => handlePointerCancel(e, message.id)}
+                    onClick={isCoarsePointer ? () => openEntryDetails(entry) : undefined}
                     onDoubleClick={() => openEntryDetails(entry)}
                   >
                     <div style={{
@@ -1289,6 +1309,7 @@ const styles = {
     border:     "1px solid #111111",
     background: "repeating-linear-gradient(180deg, rgba(0,255,136,0.03) 0 1px, transparent 1px 3px), #050505",
     userSelect: "none",
+    touchAction: "none",
     overscrollBehavior: "contain",
   },
   hud: {
