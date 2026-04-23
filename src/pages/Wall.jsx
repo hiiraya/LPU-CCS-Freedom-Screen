@@ -149,6 +149,7 @@ function buildCsvFromRows(rows) {
 function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, existingPlacements, messageSeed, messageText) {
   const CROWD_THRESHOLD = 7;
   const OVERLAP_GAP = 24;
+  const NEAR_ZONE_GAP = 18;
   const CARD_W = BASE_NOTE_WIDTH;
   const CARD_H = BASE_CARD_HEIGHT_BASE + Math.min(3, Math.ceil(messageText.length / 40)) * BASE_CARD_HEIGHT_LINE;
   const minY = SAFE_AREA_TOP_HEIGHT + 10;
@@ -175,9 +176,13 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
     const h = p.cardHeight ?? CARD_H;
     return { left: x, top: y, right: x + CARD_W, bottom: y + h };
   });
-  const inZone = existingBoxes.filter((b) =>
-    b.right >= zLeft && b.left <= zRight + CARD_W && b.bottom >= zTop && b.top <= zBot + CARD_H
-  ).length;
+  const viewportZone = { left: zLeft, right: zRight + CARD_W, top: zTop, bottom: zBot + CARD_H };
+  const rectsOverlap = (a, b) =>
+    a.left < b.right &&
+    a.right > b.left &&
+    a.top < b.bottom &&
+    a.bottom > b.top;
+  const inZone = existingBoxes.filter((b) => rectsOverlap(b, viewportZone)).length;
   const zoneW = Math.max(1, zRight - zLeft);
   const zoneH = Math.max(1, zBot - zTop);
   const density = (inZone * CARD_W * CARD_H) / Math.max(1, zoneW * zoneH);
@@ -190,6 +195,15 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
       topPx < b.bottom + OVERLAP_GAP &&
       topPx + CARD_H > b.top - OVERLAP_GAP
     );
+  const overlapsViewportZone = (leftPx, topPx) => rectsOverlap(
+    { left: leftPx, top: topPx, right: leftPx + CARD_W, bottom: topPx + CARD_H },
+    {
+      left: viewportZone.left - NEAR_ZONE_GAP,
+      right: viewportZone.right + NEAR_ZONE_GAP,
+      top: viewportZone.top - NEAR_ZONE_GAP,
+      bottom: viewportZone.bottom + NEAR_ZONE_GAP,
+    }
+  );
 
   const hash = simpleHash(messageSeed);
   let rng = hash || 1;
@@ -197,7 +211,10 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
     rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0;
     return rng / 4294967296;
   };
-  const pickInRect = (left, right, top, bottom, attempts = 20) => {
+  const pickInRect = (left, right, top, bottom, attempts = 20, options = {}) => {
+    const {
+      avoidViewportZone = false,
+    } = options;
     if (right <= left || bottom <= top) return null;
     const spanX = right - left;
     const spanY = bottom - top;
@@ -206,8 +223,10 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
       const x = left + nextRand() * spanX;
       const y = top + nextRand() * spanY;
       fallback = fallback ?? { x, y };
+      if (avoidViewportZone && overlapsViewportZone(x, y)) continue;
       if (!overlapsExisting(x, y)) return { x, y };
     }
+    if (fallback && avoidViewportZone && overlapsViewportZone(fallback.x, fallback.y)) return null;
     return fallback;
   };
 
@@ -222,18 +241,23 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
     const outerTop = Math.max(minY, zTop - padY);
     const outerBottom = Math.min(maxY, zBot + padY);
     const strips = [
-      { left: outerLeft, right: Math.max(outerLeft, zLeft - CARD_W * 0.2), top: outerTop, bottom: outerBottom },
-      { left: Math.min(outerRight, zRight + CARD_W * 0.2), right: outerRight, top: outerTop, bottom: outerBottom },
-      { left: zLeft, right: zRight, top: outerTop, bottom: Math.max(outerTop, zTop - CARD_H * 0.2) },
-      { left: zLeft, right: zRight, top: Math.min(outerBottom, zBot + CARD_H * 0.2), bottom: outerBottom },
+      { left: outerLeft, right: Math.max(outerLeft, zLeft - CARD_W - NEAR_ZONE_GAP), top: outerTop, bottom: outerBottom },
+      { left: Math.min(outerRight, zRight + CARD_W + NEAR_ZONE_GAP), right: outerRight, top: outerTop, bottom: outerBottom },
+      { left: zLeft, right: zRight, top: outerTop, bottom: Math.max(outerTop, zTop - CARD_H - NEAR_ZONE_GAP) },
+      { left: zLeft, right: zRight, top: Math.min(outerBottom, zBot + CARD_H + NEAR_ZONE_GAP), bottom: outerBottom },
     ];
     const start = hash % strips.length;
     for (let i = 0; i < strips.length; i++) {
       const rect = strips[(start + i) % strips.length];
-      picked = pickInRect(rect.left, rect.right, rect.top, rect.bottom, 16);
+      picked = pickInRect(rect.left, rect.right, rect.top, rect.bottom, 20, { avoidViewportZone: true });
       if (picked) break;
     }
-    if (!picked) picked = pickInRect(outerLeft, outerRight, outerTop, outerBottom, 20);
+    if (!picked) {
+      picked = pickInRect(outerLeft, outerRight, outerTop, outerBottom, 24, { avoidViewportZone: true });
+    }
+    if (!picked) {
+      picked = pickInRect(outerLeft, outerRight, outerTop, outerBottom, 20);
+    }
   }
   if (!picked) picked = { x: zLeft, y: zTop };
 
