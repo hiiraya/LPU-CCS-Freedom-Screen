@@ -130,11 +130,11 @@ const TOKEN_COLORS = {
 };
 
 const LANGUAGE_SNIPPETS = {
-  python: 'message = "hello wall"\nprint(message)',
-  javascript: 'const message = "hello wall";\nconsole.log(message);',
-  java: 'public class Main {\n  public static void main(String[] args) {\n    String message = "hello wall";\n    System.out.println(message);\n  }\n}',
-  cpp: '#include <iostream>\nusing namespace std;\n\nint main() {\n  string message = "hello wall";\n  cout << message;\n  return 0;\n}',
-  csharp: 'using System;\n\nclass Program {\n  static void Main() {\n    string message = "hello wall";\n    Console.WriteLine(message);\n  }\n}',
+  python: 'message = "REPLACE WITH YOUR MESSAGE"\nprint(message)',
+  javascript: 'const message = "REPLACE WITH YOUR MESSAGE";\nconsole.log(message);',
+  java: 'public class Main {\n  public static void main(String[] args) {\n    String message = "REPLACE WITH YOUR MESSAGE";\n    System.out.println(message);\n  }\n}',
+  cpp: '#include <iostream>\nusing namespace std;\n\nint main() {\n  string message = "REPLACE WITH YOUR MESSAGE";\n  cout << message;\n  return 0;\n}',
+  csharp: 'using System;\n\nclass Program {\n  static void Main() {\n    string message = "REPLACE WITH YOUR MESSAGE";\n    Console.WriteLine(message);\n  }\n}',
 };
 
 function getInitialWrapState() {
