@@ -984,7 +984,7 @@ export default function Wall() {
         {/* HUD */}
         <div style={styles.hud}>
           <div style={styles.buttonBar}>
-            <button
+            {/* <button
               style={styles.controlBtn}
               onClick={() => {
                 if (typeof window !== "undefined") window.location.href = "/";
@@ -993,7 +993,8 @@ export default function Wall() {
               onPointerDown={(e) => e.stopPropagation()}
             >
               <span aria-hidden="true" style={styles.controlBtnText}>{"</>"}</span>
-            </button>
+            </button> */}
+            
             <button style={styles.controlBtn} onClick={resetView} title="Reset view"
               onPointerDown={(e) => e.stopPropagation()}>
               <img src={resetViewIcon} alt="" aria-hidden="true" style={styles.controlIcon} />
@@ -1191,10 +1192,10 @@ export default function Wall() {
                   <div style={styles.adminSummaryValue}>{adminSession ? "open" : "locked"}</div>
                 </div>
               </div>
-              <p style={styles.dialogText}>
+              {/* <p style={styles.dialogText}>
                 Use the admin password to unlock the destructive action. Exporting saves the
-                raw wall table data as a CSV file.
-              </p>
+                raw wall table data as a CSV file. 
+              </p> */}
               <label style={styles.adminField}>
                 <span style={styles.adminFieldLabel}>Admin Password</span>
                 <input
@@ -1239,9 +1240,6 @@ export default function Wall() {
                   onClick={handleAdminLogout} disabled={!adminSession || isAdminBusy}>
                   Logout
                 </button>
-              </div>
-              <div style={styles.adminFootnote}>
-                If admin actions fail, re-run `supabase/messages_security.sql` to refresh RPC functions and policies.
               </div>
             </div>
           </div>
