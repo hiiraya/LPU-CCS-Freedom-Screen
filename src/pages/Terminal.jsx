@@ -224,6 +224,7 @@ export default function Terminal() {
   const [code, setCode] = useState("");
   const [wrapLines, setWrapLines] = useState(getInitialWrapState);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showTutorialDialog, setShowTutorialDialog] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorLine, setErrorLine] = useState(null);
   const [lineHeights, setLineHeights] = useState([]);
@@ -254,6 +255,17 @@ export default function Terminal() {
   useEffect(() => {
     textareaRef.current?.focus();
   }, []);
+
+  useEffect(() => {
+    if (!showTutorialDialog || typeof window === "undefined") return undefined;
+
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setShowTutorialDialog(false);
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showTutorialDialog]);
 
   useEffect(() => {
     if (!terminalSession || typeof window === "undefined") return undefined;
@@ -529,6 +541,80 @@ export default function Terminal() {
 
       {sidebarOpen && <div onClick={() => setSidebarOpen(false)} style={styles.sidebarScrim} />}
 
+      {showTutorialDialog && (
+        <div style={styles.tutorialOverlay} onClick={() => setShowTutorialDialog(false)}>
+          <section style={styles.tutorialDialog} onClick={(event) => event.stopPropagation()}>
+            <div style={styles.tutorialHeader}>
+              <div>
+                <div style={styles.tutorialEyebrow}>How To Use The Terminal IDE</div>
+                <h2 style={styles.tutorialTitle}>Write code, print your message, then run it.</h2>
+              </div>
+              <button type="button" onClick={() => setShowTutorialDialog(false)} style={styles.tutorialClose}>
+                x
+              </button>
+            </div>
+
+            <div style={styles.tutorialBody}>
+              <p style={styles.tutorialParagraph}>
+                This editor posts only what your program prints. The code itself is saved too,
+                but the wall entry comes from the terminal output.
+              </p>
+
+              <div style={styles.tutorialSteps}>
+                <div style={styles.tutorialStep}>
+                  <span style={styles.tutorialStepNumber}>1</span>
+                  <div>
+                    <div style={styles.tutorialStepTitle}>Pick a language</div>
+                    <div style={styles.tutorialStepCopy}>Python, JavaScript, Java, C++, and C# are supported.</div>
+                  </div>
+                </div>
+                <div style={styles.tutorialStep}>
+                  <span style={styles.tutorialStepNumber}>2</span>
+                  <div>
+                    <div style={styles.tutorialStepTitle}>Print your message</div>
+                    <div style={styles.tutorialStepCopy}>Use `print(...)`, `console.log(...)`, `cout`, or `Console.WriteLine(...)`.</div>
+                  </div>
+                </div>
+                <div style={styles.tutorialStep}>
+                  <span style={styles.tutorialStepNumber}>3</span>
+                  <div>
+                    <div style={styles.tutorialStepTitle}>Click Run</div>
+                    <div style={styles.tutorialStepCopy}>If the output is valid, the message is sent to the wall.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style={styles.tutorialExamples}>
+                <div style={styles.tutorialExampleTitle}>Quick examples</div>
+                <code style={styles.tutorialCode}>print("hello wall")</code>
+                <code style={styles.tutorialCode}>console.log("hello wall")</code>
+                <code style={styles.tutorialCode}>System.out.println("hello wall");</code>
+              </div>
+
+              <p style={styles.tutorialHint}>
+                Java needs a class with `main`, C++ needs `int main()`, and C# needs `Main()`.
+              </p>
+            </div>
+
+            <div style={styles.tutorialActions}>
+              <button
+                type="button"
+                style={styles.tutorialGhostButton}
+                onClick={() => {
+                  loadSnippet("python");
+                  setShowTutorialDialog(false);
+                }}
+              >
+                Load Python Example
+              </button>
+              <button type="button" style={styles.tutorialPrimaryButton} onClick={() => setShowTutorialDialog(false)}>
+                Start Coding
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
       <section style={styles.shell}>
         <div style={styles.workspace}>
           <aside style={styles.activityBar}>
@@ -793,6 +879,171 @@ const styles = {
   shell: {
     height: "100dvh",
     overflow: "hidden",
+  },
+  tutorialOverlay: {
+    position: "fixed",
+    inset: 0,
+    background: "rgba(5, 8, 12, 0.76)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "24px",
+    zIndex: 40,
+  },
+  tutorialDialog: {
+    width: "min(640px, 100%)",
+    maxHeight: "min(88dvh, 760px)",
+    overflowY: "auto",
+    border: "1px solid #2d323a",
+    borderRadius: "16px",
+    background: "#181a1f",
+    boxShadow: "0 28px 80px rgba(0, 0, 0, 0.45)",
+  },
+  tutorialHeader: {
+    display: "flex",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: "16px",
+    padding: "20px 22px 14px",
+    borderBottom: `1px solid ${VS.border}`,
+  },
+  tutorialEyebrow: {
+    fontSize: "11px",
+    color: "#7ca6ff",
+    letterSpacing: "0.12em",
+    textTransform: "uppercase",
+    fontFamily: "-apple-system, sans-serif",
+    fontWeight: 700,
+    marginBottom: "8px",
+  },
+  tutorialTitle: {
+    margin: 0,
+    color: "#f3f6fb",
+    fontSize: "24px",
+    lineHeight: 1.2,
+    fontFamily: "-apple-system, sans-serif",
+    fontWeight: 700,
+  },
+  tutorialClose: {
+    border: "none",
+    background: "transparent",
+    color: "#828891",
+    cursor: "pointer",
+    fontSize: "18px",
+    lineHeight: 1,
+    padding: "4px",
+  },
+  tutorialBody: {
+    padding: "18px 22px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "16px",
+  },
+  tutorialParagraph: {
+    margin: 0,
+    color: "#c8cdd5",
+    fontSize: "14px",
+    lineHeight: 1.65,
+    fontFamily: "-apple-system, sans-serif",
+  },
+  tutorialSteps: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "12px",
+  },
+  tutorialStep: {
+    display: "flex",
+    gap: "12px",
+    alignItems: "flex-start",
+    padding: "12px 14px",
+    borderRadius: "12px",
+    background: "#121419",
+    border: "1px solid #292d34",
+  },
+  tutorialStepNumber: {
+    minWidth: "28px",
+    height: "28px",
+    borderRadius: "999px",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#22365d",
+    color: "#d9e5ff",
+    fontSize: "12px",
+    fontWeight: 700,
+    fontFamily: "-apple-system, sans-serif",
+  },
+  tutorialStepTitle: {
+    color: "#f4f7fb",
+    fontSize: "14px",
+    fontWeight: 600,
+    fontFamily: "-apple-system, sans-serif",
+    marginBottom: "4px",
+  },
+  tutorialStepCopy: {
+    color: "#adb5bf",
+    fontSize: "13px",
+    lineHeight: 1.55,
+    fontFamily: "-apple-system, sans-serif",
+  },
+  tutorialExamples: {
+    display: "flex",
+    flexDirection: "column",
+    gap: "8px",
+    padding: "14px",
+    borderRadius: "12px",
+    background: "#111111",
+    border: "1px solid #2a2a2a",
+  },
+  tutorialExampleTitle: {
+    color: "#e3e7ed",
+    fontSize: "13px",
+    fontWeight: 600,
+    fontFamily: "-apple-system, sans-serif",
+  },
+  tutorialCode: {
+    color: "#8ef0b6",
+    fontSize: "12px",
+    lineHeight: 1.5,
+    fontFamily: "'SF Mono', Consolas, 'Courier New', monospace",
+  },
+  tutorialHint: {
+    margin: 0,
+    color: "#98a1ac",
+    fontSize: "12px",
+    lineHeight: 1.6,
+    fontFamily: "-apple-system, sans-serif",
+  },
+  tutorialActions: {
+    display: "flex",
+    justifyContent: "flex-end",
+    gap: "10px",
+    padding: "0 22px 22px",
+    flexWrap: "wrap",
+  },
+  tutorialGhostButton: {
+    minHeight: "38px",
+    padding: "8px 14px",
+    borderRadius: "8px",
+    border: "1px solid #394150",
+    background: "#20242c",
+    color: "#d7dde7",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: 600,
+    fontFamily: "-apple-system, sans-serif",
+  },
+  tutorialPrimaryButton: {
+    minHeight: "38px",
+    padding: "8px 16px",
+    borderRadius: "8px",
+    border: "1px solid #2a8e49",
+    background: "#146c2e",
+    color: "#ffffff",
+    cursor: "pointer",
+    fontSize: "13px",
+    fontWeight: 700,
+    fontFamily: "-apple-system, sans-serif",
   },
   workspace: {
     display: "flex",
