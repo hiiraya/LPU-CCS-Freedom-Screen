@@ -478,7 +478,7 @@ export default function Terminal() {
     }
 
     openIdeTerminal(analysis.parsed.language, "success", successLines);
-    textareaRef.current?.focus();
+    // Don't focus textarea after successful submission to prevent keyboard on mobile
   }, [code, detectedLanguage.key, openIdeTerminal]);
 
   const handleKeyDown = useCallback((event) => {
@@ -786,6 +786,7 @@ export default function Terminal() {
                   autoCorrect="off"
                   autoComplete="off"
                   spellCheck={false}
+                  inputMode="text"
                   value={code}
                   onChange={(event) => {
                     setCode(event.target.value);
