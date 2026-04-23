@@ -65,7 +65,7 @@ function WallBackground() {
         interactive={false}
         maxPixelRatio={profile.compact ? 1 : 1.5}
         pixelSize={profile.compact ? 5 : 3}
-        color="#9fcf97"
+        color="#5eeb45"
         patternScale={profile.compact ? 2.2 : 3}
         patternDensity={profile.compact ? 1.15 : 1.45}
         pixelSizeJitter={profile.compact ? 0.45 : 1.1}
