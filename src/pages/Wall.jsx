@@ -58,6 +58,12 @@ function removeSavedPosition(id) {
     window.localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(existing));
   } catch {}
 }
+function persistAllPositions(positions) {
+  try {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(POSITIONS_STORAGE_KEY, JSON.stringify(positions ?? {}));
+  } catch {}
+}
 
 // ─── Simple deterministic hash ───────────────────────────────────────────────
 function simpleHash(str) {
@@ -805,6 +811,50 @@ export default function Wall() {
   }, [adminSession, clearHighlight]);
 
   // ── Canvas pan handlers ────────────────────────────────────────────────────
+  const handleAdminShuffleLayout = useCallback(() => {
+    if (!adminSession?.password || isAdminBusy) {
+      setAdminNotice({ tone: "error", message: "Log in as admin first to shuffle entry positions." });
+      return;
+    }
+    if (messages.length === 0) {
+      setAdminNotice({ tone: "error", message: "There are no entries to shuffle right now." });
+      return;
+    }
+
+    const laneCount = Math.max(6, Math.min(16, Math.floor(WORLD_WIDTH / 280)));
+    const laneHeights = Array.from({ length: laneCount }, () => SAFE_AREA_TOP_HEIGHT + 20);
+    const shuffledMessages = [...messages].sort(() => Math.random() - 0.5);
+    const nextPositions = {};
+
+    for (const message of shuffledMessages) {
+      const plainText = stripAnsiSequences(message.text);
+      const bodyLines = Math.min(3, Math.ceil(plainText.length / 40));
+      const cardHeight = BASE_CARD_HEIGHT_BASE + bodyLines * BASE_CARD_HEIGHT_LINE;
+      const generatedPlacement = generateMessagePlacement(
+        `${message.id}-${Date.now()}-${Math.random()}`,
+        plainText
+      );
+      const lane = Math.min(
+        laneCount - 1,
+        Math.max(0, Math.floor((generatedPlacement.pos_x / 100) * laneCount))
+      );
+      const minTopPx = SAFE_AREA_TOP_HEIGHT + 10;
+      const topPx = Math.max(
+        minTopPx,
+        Math.max(laneHeights[lane] ?? minTopPx, generatedPlacement.pos_y)
+      );
+      laneHeights[lane] = topPx + cardHeight + 20;
+      nextPositions[message.id] = {
+        leftPct: generatedPlacement.pos_x,
+        topPx,
+      };
+    }
+
+    setUserPositions(nextPositions);
+    persistAllPositions(nextPositions);
+    setAdminNotice({ tone: "success", message: "Shuffled the current entry layout." });
+  }, [adminSession, isAdminBusy, messages]);
+
   const handleCanvasPointerDown = useCallback((e) => {
     panDragRef.current = {
       startPx: e.clientX, startPy: e.clientY,
@@ -1063,8 +1113,53 @@ export default function Wall() {
     <main style={styles.page}>
       <style>{`
         @keyframes wallSpawn {
-          from { opacity: 0; transform: scale(0.8); }
-          to   { opacity: 1; transform: scale(1);   }
+          0%   { opacity: 0; transform: scale(0.72) rotate(-2.5deg); }
+          48%  { opacity: 1; transform: scale(1.08) rotate(1.2deg); }
+          72%  { opacity: 1; transform: scale(0.97) rotate(-0.6deg); }
+          100% { opacity: 1; transform: scale(1) rotate(0deg); }
+        }
+        @keyframes wallSpawnBurst {
+          0% {
+            opacity: 0;
+            transform: translate(-50%, -50%) scale(0.18);
+            box-shadow:
+              0 0 0 0 rgba(0,255,136,0.7),
+              0 0 0 0 rgba(0,255,136,0.32);
+          }
+          32% {
+            opacity: 0.95;
+            transform: translate(-50%, -50%) scale(1);
+            box-shadow:
+              0 0 36px 14px rgba(0,255,136,0.36),
+              0 0 72px 28px rgba(0,255,136,0.16);
+          }
+          100% {
+            opacity: 0;
+            transform: translate(-50%, -50%) scale(1.7);
+            box-shadow:
+              0 0 22px 18px rgba(0,255,136,0),
+              0 0 84px 42px rgba(0,255,136,0);
+          }
+        }
+        @keyframes wallSpawnGlow {
+          0% {
+            box-shadow:
+              0 0 0 1px rgba(143, 210, 173, 0.16),
+              0 0 0 rgba(0,255,136,0),
+              0 18px 26px rgba(0,0,0,0.24);
+          }
+          40% {
+            box-shadow:
+              0 0 0 1px rgba(143, 210, 173, 0.34),
+              0 0 38px rgba(0,255,136,0.22),
+              0 22px 34px rgba(0,0,0,0.3);
+          }
+          100% {
+            box-shadow:
+              0 0 0 1px rgba(143, 210, 173, 0.06),
+              0 0 0 rgba(0,255,136,0),
+              0 14px 22px rgba(0,0,0,0.22);
+          }
         }
         @keyframes minimapEntryGlow {
           0%   { transform: scale(1);   box-shadow: 0 0 0 0   rgba(0,255,136,0.95); opacity: 1; background: #fff; }
@@ -1248,8 +1343,11 @@ export default function Wall() {
                       ...styles.cardWrapper,
                       borderWidth:  scaledNoteStyles.borderWidth,
                       borderRadius: scaledNoteStyles.noteRadius,
-                      animation: draggingId === message.id ? "none" : "wallSpawn 0.3s ease",
+                      animation: draggingId === message.id ? "none" : "wallSpawn 360ms cubic-bezier(0.16, 1, 0.3, 1), wallSpawnGlow 620ms ease-out",
                     }}>
+                      {draggingId !== message.id && (
+                        <div style={styles.spawnBurst} />
+                      )}
                       <div style={{
                         ...styles.cardHeader,
                         padding:          scaledNoteStyles.headerPadding,
@@ -1347,6 +1445,11 @@ export default function Wall() {
                   style={{ ...styles.adminSecondaryBtn, opacity: adminSession ? 1 : 0.55 }}
                   onClick={handleAdminExportCsv} disabled={!adminSession || isAdminBusy}>
                   Export Wall Data CSV
+                </button>
+                <button type="button"
+                  style={{ ...styles.adminSecondaryBtn, opacity: adminSession ? 1 : 0.55 }}
+                  onClick={handleAdminShuffleLayout} disabled={!adminSession || isAdminBusy}>
+                  Shuffle Entry Layout
                 </button>
                 <button type="button"
                   style={{ ...styles.adminDangerBtn, opacity: adminSession ? 1 : 0.55 }}
@@ -1554,12 +1657,27 @@ const styles = {
     transformOrigin: "top left",
   },
   cardWrapper: {
+    position: "relative",
     padding:    "0px",
     border:     "1px solid #0d3a0d",
     background: "#070f07",
     borderRadius: "9px",
     overflow:   "hidden",
     transition: "border-color 150ms",
+  },
+  spawnBurst: {
+    position: "absolute",
+    left: "50%",
+    top: "50%",
+    width: "44%",
+    aspectRatio: "1 / 1",
+    borderRadius: "999px",
+    pointerEvents: "none",
+    background: "radial-gradient(circle, rgba(0,255,136,0.34) 0%, rgba(0,255,136,0.18) 32%, rgba(0,255,136,0.05) 56%, transparent 72%)",
+    transform: "translate(-50%, -50%)",
+    filter: "blur(1px)",
+    animation: "wallSpawnBurst 560ms cubic-bezier(0.16, 1, 0.3, 1) forwards",
+    zIndex: 0,
   },
   cardHeader: {
     padding:      "7px 12px",
