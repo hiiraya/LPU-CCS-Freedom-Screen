@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import LanguageIcon from "../components/LanguageIcon.jsx";
 import beanIcon from "../images/bean.svg";
+import { parseAnsiText, stripAnsiSequences } from "../utils/ansiText.js";
 import { analyzeSubmission, detectLanguage, previewSubmissionOutput } from "../utils/parser.js";
 import { setDocumentHead } from "../utils/documentHead.js";
 import { getLanguageConfig, SUPPORTED_LANGUAGES } from "../utils/languages.js";
@@ -178,6 +179,21 @@ function tokenize(code, language) {
   return output;
 }
 
+function renderAnsiText(text, keyPrefix, defaultColor = "inherit") {
+  return parseAnsiText(text).map((segment, index) => (
+    <span
+      key={`${keyPrefix}-${index}`}
+      style={{
+        color: segment.style.color ?? defaultColor,
+        backgroundColor: segment.style.backgroundColor ?? "transparent",
+        fontWeight: segment.style.fontWeight ?? "inherit",
+      }}
+    >
+      {segment.text}
+    </span>
+  ));
+}
+
 function renderFormattedTerminalText(text, keyPrefix = "terminal") {
   const parts = String(text ?? "").split(/(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|\*[^*]+\*)/g);
 
@@ -240,7 +256,7 @@ export default function Terminal() {
 
   const detectedLanguage = useMemo(() => getLanguageConfig(detectLanguage(code)), [code]);
   const previewOutput = useMemo(() => previewSubmissionOutput(code), [code]);
-  const previewLength = previewOutput?.trim().length ?? 0;
+  const previewLength = useMemo(() => stripAnsiSequences(previewOutput ?? "").trim().length, [previewOutput]);
   const sourceLines = useMemo(() => code.split("\n"), [code]);
   const lineCount = sourceLines.length;
   const highlightedCode = useMemo(
@@ -360,7 +376,8 @@ export default function Terminal() {
   };
 
   const loadSnippet = (languageKey) => {
-    setCode(LANGUAGE_SNIPPETS[languageKey] ?? "");
+    const nextValue = LANGUAGE_SNIPPETS[languageKey] ?? "";
+    setCode(nextValue);
     setErrorLine(null);
     setSidebarOpen(false);
     requestAnimationFrame(() => textareaRef.current?.focus());
@@ -371,6 +388,7 @@ export default function Terminal() {
     const command = `PS C:\\Users\\Administrator> ${IDE_COMMANDS[languageKey] ?? `run ${config.fileName}`}`;
     setTerminalSession({
       id: Date.now(),
+      languageKey,
       variant,
       command,
       lines,
@@ -393,8 +411,9 @@ export default function Terminal() {
     }
 
     const visibleOutput = analysis.parsed.output.trim();
+    const visibleTextLength = stripAnsiSequences(visibleOutput).trim().length;
 
-    if (!visibleOutput) {
+    if (!visibleTextLength) {
       setErrorLine(null);
       openIdeTerminal(analysis.parsed.language, "error", [
         "**Nothing to send yet.**",
@@ -404,10 +423,10 @@ export default function Terminal() {
       return;
     }
 
-    if (visibleOutput.length > MESSAGE_CHAR_LIMIT) {
+    if (visibleTextLength > MESSAGE_CHAR_LIMIT) {
       setErrorLine(null);
       openIdeTerminal(analysis.parsed.language, "error", [
-        `**Output length:** ${visibleOutput.length}/${MESSAGE_CHAR_LIMIT}`,
+        `**Output length:** ${visibleTextLength}/${MESSAGE_CHAR_LIMIT}`,
         `Max ${MESSAGE_CHAR_LIMIT} characters per wall entry.`,
       ]);
       textareaRef.current?.focus();
@@ -829,7 +848,13 @@ export default function Terminal() {
                                   : "#c7ccd1",
                         }}
                       >
-                        {renderFormattedTerminalText(line, `${terminalSession.id}-${index}`)}
+                        {terminalSession.variant === "success" && terminalSession.languageKey === "python"
+                          ? renderAnsiText(
+                            line,
+                            `${terminalSession.id}-${index}`,
+                            index === 0 ? "#d4d4d4" : "#8ef0b6"
+                          )
+                          : renderFormattedTerminalText(line, `${terminalSession.id}-${index}`)}
                       </div>
                     ))}
                 </div>

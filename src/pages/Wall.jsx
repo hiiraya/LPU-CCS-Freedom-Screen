@@ -7,6 +7,7 @@ import resetViewIcon from "../images/reset-view.svg";
 import terminalIcon from "../images/terminal-icon.svg";
 import zoomInIcon from "../images/zoom-in.svg";
 import zoomOutIcon from "../images/zoom-out.svg";
+import { parseAnsiText, stripAnsiSequences } from "../utils/ansiText.js";
 import { setDocumentHead } from "../utils/documentHead.js";
 import { getLanguageConfig } from "../utils/languages.js";
 import { generateMessagePlacement } from "../utils/messagePlacement.js";
@@ -146,6 +147,25 @@ function buildCsvFromRows(rows) {
 // Returns a {leftPct, topPx, rotationDeg} for a new entry placed inside the
 // currently visible world rectangle. If the visible area is already crowded,
 // the zone is expanded outward so the card is near but not on top of others.
+function renderWallMessageText(message, language, keyPrefix) {
+  if ((language ?? "").toLowerCase() !== "python") {
+    return message;
+  }
+
+  return parseAnsiText(message).map((segment, index) => (
+    <span
+      key={`${keyPrefix}-${index}`}
+      style={{
+        color: segment.style.color ?? styles.messageText.color,
+        backgroundColor: segment.style.backgroundColor ?? "transparent",
+        fontWeight: segment.style.fontWeight ?? "inherit",
+      }}
+    >
+      {segment.text}
+    </span>
+  ));
+}
+
 function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, existingPlacements, messageSeed, messageText) {
   const CROWD_THRESHOLD = 5;
   const OVERLAP_GAP = 24;
@@ -153,7 +173,8 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
   const SAFE_MARGIN_X = 36;
   const SAFE_MARGIN_Y = 28;
   const CARD_W = BASE_NOTE_WIDTH;
-  const CARD_H = BASE_CARD_HEIGHT_BASE + Math.min(3, Math.ceil(messageText.length / 40)) * BASE_CARD_HEIGHT_LINE;
+  const plainMessageText = stripAnsiSequences(messageText);
+  const CARD_H = BASE_CARD_HEIGHT_BASE + Math.min(3, Math.ceil(plainMessageText.length / 40)) * BASE_CARD_HEIGHT_LINE;
   const minY = SAFE_AREA_TOP_HEIGHT + 10;
   const maxY = Math.max(minY, Math.max(boardHeight, 700) - SAFE_AREA_BOTTOM_HEIGHT - CARD_H);
 
@@ -611,7 +632,7 @@ export default function Wall() {
     for (const message of messages) {
       if (placementsRef.current[message.id]) continue;
 
-      const bodyLines  = Math.min(3, Math.ceil(message.text.length / 40));
+      const bodyLines  = Math.min(3, Math.ceil(stripAnsiSequences(message.text).length / 40));
       const cardHeight = BASE_CARD_HEIGHT_BASE + bodyLines * BASE_CARD_HEIGHT_LINE;
 
       // ── Stored DB placement ────────────────────────────────────────────────
@@ -1245,10 +1266,10 @@ export default function Wall() {
                         <span style={{ ...styles.filename,  fontSize: scaledNoteStyles.filenameFontSize  }}>{langConfig.fileName}</span>
                         <span style={{ ...styles.timestamp, fontSize: scaledNoteStyles.timestampFontSize }}>[{timeLabel}]</span>
                       </div>
-                      <div style={{ ...styles.cardBody, padding: scaledNoteStyles.bodyPadding }}>
-                        <div style={{ ...styles.messageText, fontSize: scaledNoteStyles.messageFontSize }}>
-                          <span style={{ ...styles.quote, fontSize: scaledNoteStyles.messageFontSize }}>"</span>
-                          {message.text}
+                        <div style={{ ...styles.cardBody, padding: scaledNoteStyles.bodyPadding }}>
+                          <div style={{ ...styles.messageText, fontSize: scaledNoteStyles.messageFontSize }}>
+                            <span style={{ ...styles.quote, fontSize: scaledNoteStyles.messageFontSize }}>"</span>
+                            {renderWallMessageText(message.text, message.language, `${message.id}-body`)}
                           <span style={{ ...styles.quote, fontSize: scaledNoteStyles.messageFontSize }}>"</span>
                         </div>
                       </div>

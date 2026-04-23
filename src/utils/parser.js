@@ -58,6 +58,9 @@ function lineNumberAt(code, index) {
 
 function decodeEscapes(value) {
   return value
+    .replace(/\\033/g, "\u001b")
+    .replace(/\\x1b/gi, "\u001b")
+    .replace(/\\e/g, "\u001b")
     .replace(/\\r/g, "\r")
     .replace(/\\n/g, "\n")
     .replace(/\\t/g, "\t")
