@@ -24,9 +24,9 @@ const REALTIME_PROCESS_INTERVAL_MS = 140;
 const REALTIME_FALLBACK_POLL_MS = 5000;
 const POSITIONS_STORAGE_KEY = "ccs-freedom-screen-note-positions";
 // ── 1.5× bigger cards ──────────────────────────────────────────────────────
-const BASE_NOTE_WIDTH = 252;        // was 168
-const BASE_CARD_HEIGHT_BASE = 141;  // was 94  (94 × 1.5)
-const BASE_CARD_HEIGHT_LINE = 27;   // was 18  (18 × 1.5)
+const BASE_NOTE_WIDTH = 294;        // was 168
+const BASE_CARD_HEIGHT_BASE = 188;  // was 94  (94 × 2)
+const BASE_CARD_HEIGHT_LINE = 36;   // was 18  (18 × 2)
 const MAX_ZOOM = 2.5;
 const FIT_PADDING = 28;
 const WORLD_WIDTH = 4000;
@@ -147,9 +147,11 @@ function buildCsvFromRows(rows) {
 // currently visible world rectangle. If the visible area is already crowded,
 // the zone is expanded outward so the card is near but not on top of others.
 function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, existingPlacements, messageSeed, messageText) {
-  const CROWD_THRESHOLD = 7;
+  const CROWD_THRESHOLD = 5;
   const OVERLAP_GAP = 24;
   const NEAR_ZONE_GAP = 18;
+  const SAFE_MARGIN_X = 36;
+  const SAFE_MARGIN_Y = 28;
   const CARD_W = BASE_NOTE_WIDTH;
   const CARD_H = BASE_CARD_HEIGHT_BASE + Math.min(3, Math.ceil(messageText.length / 40)) * BASE_CARD_HEIGHT_LINE;
   const minY = SAFE_AREA_TOP_HEIGHT + 10;
@@ -170,13 +172,33 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
     zBot = Math.min(maxY, zBot + CARD_H * 2);
   }
 
+  const activeSafeRect = {
+    left: Math.max(0, Math.min(WORLD_WIDTH - CARD_W, zLeft + SAFE_MARGIN_X)),
+    right: Math.max(0, Math.min(WORLD_WIDTH - CARD_W, zRight - SAFE_MARGIN_X)),
+    top: Math.max(minY, Math.min(maxY, zTop + SAFE_MARGIN_Y)),
+    bottom: Math.max(minY, Math.min(maxY, zBot - SAFE_MARGIN_Y)),
+  };
+  if (activeSafeRect.right <= activeSafeRect.left) {
+    activeSafeRect.left = Math.max(0, Math.min(WORLD_WIDTH - CARD_W, zLeft));
+    activeSafeRect.right = Math.max(0, Math.min(WORLD_WIDTH - CARD_W, zRight));
+  }
+  if (activeSafeRect.bottom <= activeSafeRect.top) {
+    activeSafeRect.top = Math.max(minY, Math.min(maxY, zTop));
+    activeSafeRect.bottom = Math.max(minY, Math.min(maxY, zBot));
+  }
+
   const existingBoxes = Object.values(existingPlacements).map((p) => {
     const x = (p.leftPct / 100) * WORLD_WIDTH;
     const y = p.topPx;
     const h = p.cardHeight ?? CARD_H;
     return { left: x, top: y, right: x + CARD_W, bottom: y + h };
   });
-  const viewportZone = { left: zLeft, right: zRight + CARD_W, top: zTop, bottom: zBot + CARD_H };
+  const viewportZone = {
+    left: activeSafeRect.left,
+    right: activeSafeRect.right + CARD_W,
+    top: activeSafeRect.top,
+    bottom: activeSafeRect.bottom + CARD_H,
+  };
   const rectsOverlap = (a, b) =>
     a.left < b.right &&
     a.right > b.left &&
@@ -204,63 +226,105 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
       bottom: viewportZone.bottom + NEAR_ZONE_GAP,
     }
   );
-
-  const hash = simpleHash(messageSeed);
-  let rng = hash || 1;
-  const nextRand = () => {
-    rng = (Math.imul(rng, 1664525) + 1013904223) >>> 0;
-    return rng / 4294967296;
-  };
-  const pickInRect = (left, right, top, bottom, attempts = 20, options = {}) => {
+  const buildCandidates = (rect, options = {}) => {
     const {
-      avoidViewportZone = false,
+      avoidViewport = false,
+      focus = null,
     } = options;
-    if (right <= left || bottom <= top) return null;
-    const spanX = right - left;
-    const spanY = bottom - top;
-    let fallback = null;
-    for (let i = 0; i < attempts; i++) {
-      const x = left + nextRand() * spanX;
-      const y = top + nextRand() * spanY;
-      fallback = fallback ?? { x, y };
-      if (avoidViewportZone && overlapsViewportZone(x, y)) continue;
-      if (!overlapsExisting(x, y)) return { x, y };
+    if (rect.right < rect.left || rect.bottom < rect.top) return [];
+    const stepX = CARD_W + OVERLAP_GAP;
+    const stepY = CARD_H + OVERLAP_GAP;
+    const usableWidth = Math.max(0, rect.right - rect.left);
+    const usableHeight = Math.max(0, rect.bottom - rect.top);
+    const cols = Math.max(1, Math.floor(usableWidth / Math.max(stepX, 1)) + 1);
+    const rows = Math.max(1, Math.floor(usableHeight / Math.max(stepY, 1)) + 1);
+    const centerX = focus?.x ?? (rect.left + rect.right) / 2;
+    const centerY = focus?.y ?? (rect.top + rect.bottom) / 2;
+    const candidates = [];
+
+    for (let row = 0; row < rows; row++) {
+      for (let col = 0; col < cols; col++) {
+        const baseX = rect.left + Math.min(usableWidth, col * stepX);
+        const baseY = rect.top + Math.min(usableHeight, row * stepY);
+        const candidate = {
+          x: Math.max(rect.left, Math.min(rect.right, baseX)),
+          y: Math.max(rect.top, Math.min(rect.bottom, baseY)),
+        };
+        if (avoidViewport && overlapsViewportZone(candidate.x, candidate.y)) continue;
+        candidates.push(candidate);
+      }
     }
-    if (fallback && avoidViewportZone && overlapsViewportZone(fallback.x, fallback.y)) return null;
-    return fallback;
+
+    return candidates.sort((a, b) => {
+      const da = Math.hypot(a.x - centerX, a.y - centerY);
+      const db = Math.hypot(b.x - centerX, b.y - centerY);
+      return da - db;
+    });
+  };
+  const pickFirstOpen = (candidates) => {
+    for (const candidate of candidates) {
+      if (!overlapsExisting(candidate.x, candidate.y)) return candidate;
+    }
+    return candidates[0] ?? null;
   };
 
+  const viewportCenter = {
+    x: (activeSafeRect.left + activeSafeRect.right) / 2,
+    y: (activeSafeRect.top + activeSafeRect.bottom) / 2,
+  };
   let picked = null;
+
   if (!isCrammed) {
-    picked = pickInRect(zLeft, zRight, zTop, zBot, 26);
+    picked = pickFirstOpen(buildCandidates(activeSafeRect, { focus: viewportCenter }));
   } else {
-    const padX = Math.max(CARD_W * 0.9, zoneW * 0.26);
-    const padY = Math.max(CARD_H * 0.9, zoneH * 0.26);
-    const outerLeft = Math.max(0, zLeft - padX);
-    const outerRight = Math.min(WORLD_WIDTH - CARD_W, zRight + padX);
-    const outerTop = Math.max(minY, zTop - padY);
-    const outerBottom = Math.min(maxY, zBot + padY);
-    const strips = [
-      { left: outerLeft, right: Math.max(outerLeft, zLeft - CARD_W - NEAR_ZONE_GAP), top: outerTop, bottom: outerBottom },
-      { left: Math.min(outerRight, zRight + CARD_W + NEAR_ZONE_GAP), right: outerRight, top: outerTop, bottom: outerBottom },
-      { left: zLeft, right: zRight, top: outerTop, bottom: Math.max(outerTop, zTop - CARD_H - NEAR_ZONE_GAP) },
-      { left: zLeft, right: zRight, top: Math.min(outerBottom, zBot + CARD_H + NEAR_ZONE_GAP), bottom: outerBottom },
+    const padX = Math.max(CARD_W + NEAR_ZONE_GAP, zoneW * 0.22);
+    const padY = Math.max(CARD_H + NEAR_ZONE_GAP, zoneH * 0.22);
+    const surroundingRects = [
+      {
+        left: Math.min(WORLD_WIDTH - CARD_W, activeSafeRect.right + CARD_W + NEAR_ZONE_GAP),
+        right: Math.min(WORLD_WIDTH - CARD_W, activeSafeRect.right + padX),
+        top: Math.max(minY, activeSafeRect.top - padY * 0.5),
+        bottom: Math.min(maxY, activeSafeRect.bottom + padY * 0.5),
+      },
+      {
+        left: Math.max(0, activeSafeRect.left - padX),
+        right: Math.max(0, activeSafeRect.left - CARD_W - NEAR_ZONE_GAP),
+        top: Math.max(minY, activeSafeRect.top - padY * 0.5),
+        bottom: Math.min(maxY, activeSafeRect.bottom + padY * 0.5),
+      },
+      {
+        left: Math.max(0, activeSafeRect.left - padX * 0.25),
+        right: Math.min(WORLD_WIDTH - CARD_W, activeSafeRect.right + padX * 0.25),
+        top: Math.min(maxY, activeSafeRect.bottom + CARD_H + NEAR_ZONE_GAP),
+        bottom: Math.min(maxY, activeSafeRect.bottom + padY),
+      },
+      {
+        left: Math.max(0, activeSafeRect.left - padX * 0.25),
+        right: Math.min(WORLD_WIDTH - CARD_W, activeSafeRect.right + padX * 0.25),
+        top: Math.max(minY, activeSafeRect.top - padY),
+        bottom: Math.max(minY, activeSafeRect.top - CARD_H - NEAR_ZONE_GAP),
+      },
     ];
-    const start = hash % strips.length;
-    for (let i = 0; i < strips.length; i++) {
-      const rect = strips[(start + i) % strips.length];
-      picked = pickInRect(rect.left, rect.right, rect.top, rect.bottom, 20, { avoidViewportZone: true });
+
+    for (const rect of surroundingRects) {
+      picked = pickFirstOpen(buildCandidates(rect, {
+        avoidViewport: true,
+        focus: viewportCenter,
+      }));
       if (picked) break;
     }
-    if (!picked) {
-      picked = pickInRect(outerLeft, outerRight, outerTop, outerBottom, 24, { avoidViewportZone: true });
-    }
-    if (!picked) {
-      picked = pickInRect(outerLeft, outerRight, outerTop, outerBottom, 20);
-    }
   }
-  if (!picked) picked = { x: zLeft, y: zTop };
 
+  if (!picked) {
+    picked = pickFirstOpen(buildCandidates({
+      left: Math.max(0, zLeft),
+      right: Math.min(WORLD_WIDTH - CARD_W, zRight),
+      top: Math.max(minY, zTop),
+      bottom: Math.min(maxY, zBot),
+    }, { focus: viewportCenter })) ?? { x: zLeft, y: zTop };
+  }
+
+  const hash = simpleHash(messageSeed);
   const rotSign = (hash & 1) ? 1 : -1;
   const rotMag = ((hash % 140) / 140) * 7;
   const leftPct = Math.max(0, Math.min(96, (picked.x / WORLD_WIDTH) * 100));
@@ -319,6 +383,7 @@ export default function Wall() {
   const realtimeTimerRef = useRef(null);
   const fallbackPollRef = useRef(null);
   const seenMessageIdsRef = useRef(new Set());
+  const initialPlacementPassDoneRef = useRef(false);
 
   useEffect(() => {
     setDocumentHead("CCS Freedom Screen", terminalIcon);
@@ -484,10 +549,10 @@ export default function Wall() {
   }, [applyView, boardHeight]);
 
   useEffect(() => {
-    if (!isInitialized && boardHeight > 0 && messages.length > 0) {
+    if (!isInitialized && boardHeight > 0) {
       initializeView();
     }
-  }, [boardHeight, initializeView, isInitialized, messages.length]);
+  }, [boardHeight, initializeView, isInitialized]);
 
   useEffect(() => {
     if (!isInitialized || boardHeight <= 0) return;
@@ -513,6 +578,7 @@ export default function Wall() {
       laneHeightsRef.current = [];
       seenMessageIdsRef.current = new Set();
       setBoardHeight(Math.max(window.innerHeight, 600));
+      initialPlacementPassDoneRef.current = true;
       setPlacementReady((v) => v + 1);
       return;
     }
@@ -524,7 +590,7 @@ export default function Wall() {
     const newMessageIds = new Set(messages
       .filter((m) => !previouslySeenIds.has(m.id))
       .map((m) => m.id));
-    const hasSeenBefore = previouslySeenIds.size > 0;
+    const placementPassReady = initialPlacementPassDoneRef.current;
 
     const vpEl   = viewportRef.current;
     const vpW    = vpEl?.clientWidth  ?? window.innerWidth;
@@ -565,7 +631,7 @@ export default function Wall() {
       }
 
       // ── Realtime new entry: place inside visible viewport zone ─────────────
-      if (isInitialized && hasSeenBefore && newMessageIds.has(message.id)) {
+      if (placementPassReady && isInitialized && newMessageIds.has(message.id)) {
         const seed = `${message.id}-${message.created_at}`;
         const vp = computeViewportPlacement(
           curPan.x, curPan.y, curZoom,
@@ -600,6 +666,7 @@ export default function Wall() {
       return Math.max(max, p.topPx + p.cardHeight);
     }, Math.max(window.innerHeight, 600));
     seenMessageIdsRef.current = currentIds;
+    initialPlacementPassDoneRef.current = true;
     setBoardHeight(nextHeight + SAFE_AREA_BOTTOM_HEIGHT + 64);
     setPlacementReady((v) => v + 1);
   }, [messages, isInitialized, boardHeight]);
@@ -1007,6 +1074,11 @@ export default function Wall() {
 
         {/* HUD */}
         <div style={styles.hud}>
+          <div style={styles.wallTitleBar}>
+            <span style={styles.wallTitleBarPrimary}>CCS FREEDOM</span>
+            <span style={styles.wallTitleBarDivider}>/</span>
+            <span style={styles.wallTitleBarSecondary}>DIGITAL WALL</span>
+          </div>
           <div style={styles.buttonBar}>
             {/* <button
               style={styles.controlBtn}
@@ -1340,6 +1412,48 @@ const styles = {
     zIndex:        20,
     pointerEvents: "none",
   },
+  wallTitleBar: {
+    position: "absolute",
+    top: "12px",
+    left: "50%",
+    transform: "translateX(-50%)",
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    padding: "8px 16px",
+    border: "1px solid #153222",
+    borderRadius: "999px",
+    background: "rgba(2, 10, 6, 0.78)",
+    boxShadow: "0 0 18px rgba(0, 255, 65, 0.08)",
+    textAlign: "center",
+    pointerEvents: "none",
+    zIndex: 10,
+  },
+  wallTitleBarPrimary: {
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+    fontSize: "12px",
+    fontWeight: 700,
+    color: "#00ff41",
+    letterSpacing: "0.16em",
+    margin: 0,
+    lineHeight: 1,
+    textTransform: "uppercase",
+  },
+  wallTitleBarDivider: {
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+    fontSize: "11px",
+    color: "#235b38",
+    lineHeight: 1,
+  },
+  wallTitleBarSecondary: {
+    fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+    fontSize: "11px",
+    color: "#2a8a2a",
+    letterSpacing: "0.22em",
+    margin: 0,
+    lineHeight: 1,
+    textTransform: "uppercase",
+  },
   promptLine: {
     position:      "absolute",
     top:           "12px",
@@ -1354,7 +1468,8 @@ const styles = {
     position: "absolute",
     pointerEvents: "none",
     color: "#00ff88",
-    fontSize: "20px",
+    fontSize: "28px",
+    fontWeight: 700,
     textShadow: "0 0 12px rgba(0,255,136,0.75)",
     zIndex: 24,
     lineHeight: 1,
@@ -1636,6 +1751,7 @@ const styles = {
     fontFamily: 'Consolas, Monaco, "Courier New", monospace',
   },
 };
+
 
 
 

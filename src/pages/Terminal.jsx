@@ -4,7 +4,6 @@ import beanIcon from "../images/bean.svg";
 import { analyzeSubmission, detectLanguage, previewSubmissionOutput } from "../utils/parser.js";
 import { setDocumentHead } from "../utils/documentHead.js";
 import { getLanguageConfig, SUPPORTED_LANGUAGES } from "../utils/languages.js";
-import { generateMessagePlacement } from "../utils/messagePlacement.js";
 import { insertMessageWithFallback } from "../utils/messagesApi.js";
 
 const WRAP_STORAGE_KEY = "ccs-freedom-screen-terminal-wrap-lines";
@@ -416,15 +415,10 @@ export default function Terminal() {
 
     setIsSubmitting(true);
     setErrorLine(null);
-    const initialPlacement = generateMessagePlacement(`${Date.now()}-${visibleOutput}`, visibleOutput);
-
     const payload = {
       text: visibleOutput,
       full_code: code,
       language: analysis.parsed.language,
-      pos_x: initialPlacement.pos_x,
-      pos_y: initialPlacement.pos_y,
-      rotation: initialPlacement.rotation,
     };
 
     const { error: insertError, insertedKeys } = await insertMessageWithFallback(payload);
