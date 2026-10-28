@@ -110,6 +110,11 @@ function getViewportMetrics(viewport) {
     height: viewport?.clientHeight ?? window.innerHeight,
   };
 }
+function getMinBoardHeight(viewport) {
+  const { width, height } = getViewportMetrics(viewport);
+  const aspectMatchedHeight = Math.round((WORLD_WIDTH * height) / Math.max(width, 1));
+  return Math.max(height, aspectMatchedHeight, 600);
+}
 function getFitZoom(boardHeight, viewportWidth, viewportHeight) {
   const availableWidth = Math.max(1, viewportWidth - FIT_PADDING * 2);
   const availableHeight = Math.max(1, viewportHeight - FIT_PADDING * 2);
@@ -666,6 +671,11 @@ export default function Wall() {
   useEffect(() => {
     if (!isInitialized || boardHeight <= 0) return;
     const syncViewToViewport = () => {
+      const minBoardHeight = getMinBoardHeight(viewportRef.current);
+      if (boardHeight < minBoardHeight) {
+        setBoardHeight(minBoardHeight);
+        return;
+      }
       const { width, height } = getViewportMetrics(viewportRef.current);
       const minZoom = getFitZoom(boardHeight, width, height);
       const nextZoom = Math.max(minZoom, Math.min(MAX_ZOOM, zoomRef.current));
@@ -687,7 +697,7 @@ export default function Wall() {
       placementsRef.current = {};
       laneHeightsRef.current = [];
       seenMessageIdsRef.current = new Set();
-      setBoardHeight(Math.max(window.innerHeight, 600));
+      setBoardHeight(getMinBoardHeight(viewportRef.current));
       initialPlacementPassDoneRef.current = true;
       setPlacementReady((v) => v + 1);
       return;
@@ -809,16 +819,17 @@ export default function Wall() {
       persistAllPositions(updatedSavedPositions);
     }
 
+    const minBoardHeight = getMinBoardHeight(viewportRef.current);
     const nextHeight = messages.reduce((max, m) => {
       const p = placementsRef.current[m.id];
       if (!p) return max;
       const saved = userPositionsRef.current?.[m.id];
       const topPx = saved && Number.isFinite(saved.topPx) ? saved.topPx : p.topPx;
       return Math.max(max, topPx + p.cardHeight);
-    }, Math.max(window.innerHeight, 600));
+    }, minBoardHeight);
     seenMessageIdsRef.current = currentIds;
     initialPlacementPassDoneRef.current = true;
-    setBoardHeight(nextHeight + SAFE_AREA_BOTTOM_HEIGHT + 64);
+    setBoardHeight(Math.max(minBoardHeight, nextHeight + SAFE_AREA_BOTTOM_HEIGHT + 64));
     setPlacementReady((v) => v + 1);
   }, [messages, isLoading, isInitialized, boardHeight]);
 
@@ -947,10 +958,11 @@ export default function Wall() {
       return;
     }
 
+    const minBoardHeight = getMinBoardHeight(viewportRef.current);
     const shuffledMessages = [...messages].sort(() => Math.random() - 0.5);
     const nextPlacements = {};
     const nextPositions = {};
-    let maxBottom = Math.max(window.innerHeight, 600);
+    let maxBottom = minBoardHeight;
 
     for (const message of shuffledMessages) {
       const plainText = stripAnsiSequences(message.text);
@@ -975,7 +987,7 @@ export default function Wall() {
     userPositionsRef.current = nextPositions;
     setUserPositions(nextPositions);
     persistAllPositions(nextPositions);
-    setBoardHeight(maxBottom + SAFE_AREA_BOTTOM_HEIGHT + 64);
+    setBoardHeight(Math.max(minBoardHeight, maxBottom + SAFE_AREA_BOTTOM_HEIGHT + 64));
     setPlacementReady((v) => v + 1);
     setAdminNotice({ tone: "success", message: "Shuffled the current entry layout." });
   }, [adminSession, isAdminBusy, messages]);
@@ -1311,14 +1323,7 @@ export default function Wall() {
         onWheel={handleViewportWheel}
       >
         {/* Background */}
-        <div style={{
-          position: "absolute", left: 0, top: 0,
-          width: `${WORLD_WIDTH}px`, height: `${boardHeight}px`,
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
-          transformOrigin: "0 0", willChange: "transform", zIndex: 0, pointerEvents: "none",
-        }}>
-          <WallBackground />
-        </div>
+        <WallBackground />
 
         {/* HUD */}
         <div style={styles.hud}>

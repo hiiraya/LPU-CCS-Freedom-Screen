@@ -2,7 +2,7 @@ const WORLD_WIDTH = 4000;
 const BASE_CARD_WIDTH = 294;
 const DEFAULT_LANE_COUNT = 12;
 const DEFAULT_TOP_OFFSET = 48;
-const DEFAULT_VERTICAL_SPACING = 68;
+const DEFAULT_VERTICAL_SPACING = 74;
 const HORIZONTAL_MARGIN_PCT = 1.2;
 
 export function hashSeed(input, salt = 0) {
@@ -37,7 +37,7 @@ export function generateMessagePlacement(seedInput, text = "") {
   const leftPct = Math.max(HORIZONTAL_MARGIN_PCT, Math.min(maxLeftPct, laneStartPct + jitter));
 
   const bodyLines = Math.min(4, Math.ceil(String(text ?? "").length / 38));
-  const verticalBand = seedY % 20;
+  const verticalBand = seedY % 24;
   const topPx =
     DEFAULT_TOP_OFFSET +
     verticalBand * (DEFAULT_VERTICAL_SPACING + bodyLines * 6) +

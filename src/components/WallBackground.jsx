@@ -79,7 +79,7 @@ function WallBackground() {
         liquidWobbleSpeed={5}
         speed={profile.compact ? 1.1 : 2.25}
         targetFps={profile.compact ? 24 : 36}
-        edgeFade={0.25}
+        edgeFade={0.04}
         transparent
       />
     </div>
