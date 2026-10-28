@@ -10,7 +10,7 @@ import zoomOutIcon from "../images/zoom-out.svg";
 import { parseAnsiText, stripAnsiSequences } from "../utils/ansiText.js";
 import { setDocumentHead } from "../utils/documentHead.js";
 import { getLanguageConfig } from "../utils/languages.js";
-import { generateMessagePlacement } from "../utils/messagePlacement.js";
+import { generateMessagePlacement, hashSeed } from "../utils/messagePlacement.js";
 import {
   deleteMessageWithAdminPassword,
   deleteAllMessagesWithAdminPassword,
@@ -172,6 +172,81 @@ function renderWallMessageText(message, language, keyPrefix) {
   ));
 }
 
+function computeScatteredBoardPlacement(
+  seedInput,
+  messageText,
+  cardHeight,
+  existingPlacements,
+  preferred = null
+) {
+  const CARD_W = BASE_NOTE_WIDTH;
+  const GAP_X = 18;
+  const GAP_Y = 20;
+  const LANE_COUNT = 12;
+  const minTopPx = SAFE_AREA_TOP_HEIGHT + 20;
+  const minLeftPx = 40;
+  const maxLeftPx = WORLD_WIDTH - CARD_W - 40;
+  const plainText = stripAnsiSequences(messageText);
+
+  const generated = preferred ?? generateMessagePlacement(seedInput, plainText);
+  const prefX = Math.max(minLeftPx, Math.min(maxLeftPx, (generated.pos_x / 100) * WORLD_WIDTH));
+  const prefY = Math.max(minTopPx, generated.pos_y);
+  const rotationDeg = Number.isFinite(generated.rotation) ? generated.rotation : 0;
+
+  const existingBoxes = Object.values(existingPlacements).map((p) => {
+    const x = (p.leftPct / 100) * WORLD_WIDTH;
+    const y = p.topPx;
+    const h = p.cardHeight ?? cardHeight;
+    return { left: x, top: y, right: x + CARD_W, bottom: y + h };
+  });
+
+  const overlaps = (x, y) =>
+    existingBoxes.some((b) =>
+      x < b.right + GAP_X &&
+      x + CARD_W > b.left - GAP_X &&
+      y < b.bottom + GAP_Y &&
+      y + cardHeight > b.top - GAP_Y
+    );
+
+  if (!overlaps(prefX, prefY)) {
+    return {
+      leftPct: Number(((prefX / WORLD_WIDTH) * 100).toFixed(3)),
+      topPx: Math.round(prefY),
+      rotationDeg,
+    };
+  }
+
+  const usableW = maxLeftPx - minLeftPx;
+  const laneStep = usableW / Math.max(1, LANE_COUNT - 1);
+  const rowStep = BASE_CARD_HEIGHT_BASE + 44;
+  const maxExistingBottom = existingBoxes.reduce((m, b) => Math.max(m, b.bottom), 1400);
+  const maxSearchY = Math.max(1800, maxExistingBottom + rowStep * 3);
+  const jitterHash = hashSeed(seedInput, 4);
+
+  let bestCandidate = null;
+  let bestScore = Infinity;
+
+  for (let y = minTopPx; y <= maxSearchY; y += 56) {
+    for (let lane = 0; lane < LANE_COUNT; lane += 1) {
+      const laneJitter = ((jitterHash + lane * 97 + y) % 29) - 14;
+      const x = Math.max(minLeftPx, Math.min(maxLeftPx, minLeftPx + lane * laneStep + laneJitter));
+      if (overlaps(x, y)) continue;
+      const dist = Math.hypot((x - prefX) * 0.85, (y - prefY) * 1.15);
+      if (dist < bestScore) {
+        bestScore = dist;
+        bestCandidate = { x, y };
+      }
+    }
+  }
+
+  const chosen = bestCandidate ?? { x: prefX, y: maxExistingBottom + GAP_Y };
+  return {
+    leftPct: Number(((chosen.x / WORLD_WIDTH) * 100).toFixed(3)),
+    topPx: Math.round(chosen.y),
+    rotationDeg,
+  };
+}
+
 function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, existingPlacements, messageSeed, messageText) {
   const CROWD_THRESHOLD = 5;
   const OVERLAP_GAP = 24;
@@ -288,11 +363,11 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
       return da - db;
     });
   };
-  const pickFirstOpen = (candidates) => {
+  const findFirstOpen = (candidates) => {
     for (const candidate of candidates) {
       if (!overlapsExisting(candidate.x, candidate.y)) return candidate;
     }
-    return candidates[0] ?? null;
+    return null;
   };
 
   const viewportCenter = {
@@ -302,10 +377,12 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
   let picked = null;
 
   if (!isCrammed) {
-    picked = pickFirstOpen(buildCandidates(activeSafeRect, { focus: viewportCenter }));
-  } else {
-    const padX = Math.max(CARD_W + NEAR_ZONE_GAP, zoneW * 0.22);
-    const padY = Math.max(CARD_H + NEAR_ZONE_GAP, zoneH * 0.22);
+    picked = findFirstOpen(buildCandidates(activeSafeRect, { focus: viewportCenter }));
+  }
+
+  if (!picked) {
+    const padX = Math.max(CARD_W * 2 + NEAR_ZONE_GAP * 2, zoneW * 0.45);
+    const padY = Math.max(CARD_H * 2 + NEAR_ZONE_GAP * 2, zoneH * 0.45);
     const surroundingRects = [
       {
         left: Math.min(WORLD_WIDTH - CARD_W, activeSafeRect.right + CARD_W + NEAR_ZONE_GAP),
@@ -334,7 +411,7 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
     ];
 
     for (const rect of surroundingRects) {
-      picked = pickFirstOpen(buildCandidates(rect, {
+      picked = findFirstOpen(buildCandidates(rect, {
         avoidViewport: true,
         focus: viewportCenter,
       }));
@@ -343,12 +420,7 @@ function computeViewportPlacement(panX, panY, zoom, vpW, vpH, boardHeight, exist
   }
 
   if (!picked) {
-    picked = pickFirstOpen(buildCandidates({
-      left: Math.max(0, zLeft),
-      right: Math.min(WORLD_WIDTH - CARD_W, zRight),
-      top: Math.max(minY, zTop),
-      bottom: Math.min(maxY, zBot),
-    }, { focus: viewportCenter })) ?? { x: zLeft, y: zTop };
+    return computeScatteredBoardPlacement(messageSeed, messageText, CARD_H, existingPlacements);
   }
 
   const hash = simpleHash(messageSeed);
@@ -410,7 +482,13 @@ export default function Wall() {
   const realtimeTimerRef = useRef(null);
   const fallbackPollRef = useRef(null);
   const seenMessageIdsRef = useRef(new Set());
+  const realtimeInsertedIdsRef = useRef(new Set());
+  const userPositionsRef = useRef(userPositions);
   const initialPlacementPassDoneRef = useRef(false);
+
+  useEffect(() => {
+    userPositionsRef.current = userPositions;
+  }, [userPositions]);
 
   useEffect(() => {
     setDocumentHead("CCS Freedom Screen", terminalIcon);
@@ -467,6 +545,10 @@ export default function Wall() {
     const incomingIds = nextBatch
       .filter((e) => e.type === "INSERT" && e.message?.id != null)
       .map((e) => e.message.id);
+
+    for (const id of incomingIds) {
+      realtimeInsertedIdsRef.current.add(id);
+    }
 
     setMessages((previous) => applyRealtimeEvents(previous, nextBatch));
 
@@ -601,6 +683,7 @@ export default function Wall() {
   useEffect(() => {
     const currentIds = new Set(messages.map((m) => m.id));
     if (messages.length === 0) {
+      if (isLoading) return;
       placementsRef.current = {};
       laneHeightsRef.current = [];
       seenMessageIdsRef.current = new Set();
@@ -610,7 +693,9 @@ export default function Wall() {
       return;
     }
     Object.keys(placementsRef.current).forEach((key) => {
-      if (!currentIds.has(Number(key))) delete placementsRef.current[Number(key)];
+      if (!currentIds.has(key) && !currentIds.has(Number(key))) {
+        delete placementsRef.current[key];
+      }
     });
 
     const previouslySeenIds = seenMessageIdsRef.current;
@@ -625,41 +710,76 @@ export default function Wall() {
     const curPan = panRef.current;
     const curZoom = zoomRef.current;
 
-    // Lane-based fallback for initial load
-    const laneCount = Math.max(6, Math.min(16, Math.floor(WORLD_WIDTH / 280)));
-    if (laneHeightsRef.current.length === 0) {
-      laneHeightsRef.current = Array.from({ length: laneCount }, () => SAFE_AREA_TOP_HEIGHT + 20);
-    } else if (laneHeightsRef.current.length < laneCount) {
-      laneHeightsRef.current = Array.from({ length: laneCount }, (_, i) =>
-        laneHeightsRef.current[i] ?? (SAFE_AREA_TOP_HEIGHT + 20)
-      );
-    }
+    const getCardHeight = (message) => {
+      const bodyLines = Math.min(3, Math.ceil(stripAnsiSequences(message.text).length / 40));
+      return BASE_CARD_HEIGHT_BASE + bodyLines * BASE_CARD_HEIGHT_LINE;
+    };
 
+    let updatedSavedPositions = null;
+
+    // ── Pass 1: Locally saved positions (e.g. user-dragged or shuffled) ──────
     for (const message of messages) {
       if (placementsRef.current[message.id]) continue;
+      const saved = userPositionsRef.current?.[message.id];
+      if (!saved || !Number.isFinite(saved.leftPct) || !Number.isFinite(saved.topPx)) continue;
 
-      const bodyLines  = Math.min(3, Math.ceil(stripAnsiSequences(message.text).length / 40));
-      const cardHeight = BASE_CARD_HEIGHT_BASE + bodyLines * BASE_CARD_HEIGHT_LINE;
+      const cardHeight = getCardHeight(message);
+      const seed = `${message.id}-${message.created_at}`;
+      const baseRotation = Number.isFinite(message.rotation)
+        ? message.rotation
+        : generateMessagePlacement(seed, message.text).rotation;
+      const placed = computeScatteredBoardPlacement(
+        seed,
+        message.text,
+        cardHeight,
+        placementsRef.current,
+        { pos_x: saved.leftPct, pos_y: saved.topPx, rotation: baseRotation }
+      );
+      placementsRef.current[message.id] = { ...placed, cardHeight };
 
-      // ── Stored DB placement ────────────────────────────────────────────────
+      if (Math.abs(placed.leftPct - saved.leftPct) > 0.05 || Math.abs(placed.topPx - saved.topPx) > 1) {
+        if (!updatedSavedPositions) {
+          updatedSavedPositions = { ...userPositionsRef.current };
+        }
+        updatedSavedPositions[message.id] = { leftPct: placed.leftPct, topPx: placed.topPx };
+      }
+    }
+
+    // ── Pass 2: Stored DB placements ─────────────────────────────────────────
+    for (const message of messages) {
+      if (placementsRef.current[message.id]) continue;
       const hasStoredPlacement =
         Number.isFinite(message.pos_x) &&
         Number.isFinite(message.pos_y) &&
         Number.isFinite(message.rotation);
+      if (!hasStoredPlacement) continue;
 
-      if (hasStoredPlacement) {
-        placementsRef.current[message.id] = {
-          leftPct:     message.pos_x,
-          topPx:       message.pos_y,
-          cardHeight,
-          rotationDeg: message.rotation,
-        };
-        continue;
-      }
+      const cardHeight = getCardHeight(message);
+      const seed = `${message.id}-${message.created_at}`;
+      const placed = computeScatteredBoardPlacement(
+        seed,
+        message.text,
+        cardHeight,
+        placementsRef.current,
+        { pos_x: message.pos_x, pos_y: message.pos_y, rotation: message.rotation }
+      );
+      placementsRef.current[message.id] = { ...placed, cardHeight };
+    }
 
-      // ── Realtime new entry: place inside visible viewport zone ─────────────
-      if (placementPassReady && isInitialized && newMessageIds.has(message.id)) {
-        const seed = `${message.id}-${message.created_at}`;
+    // ── Pass 3: Remaining messages (realtime new entries vs full-board scatter)
+    for (const message of messages) {
+      if (placementsRef.current[message.id]) continue;
+
+      const cardHeight = getCardHeight(message);
+      const seed = `${message.id}-${message.created_at}`;
+      const isRealtimeInsert =
+        placementPassReady &&
+        isInitialized &&
+        newMessageIds.has(message.id) &&
+        realtimeInsertedIdsRef.current.has(message.id);
+
+      if (isRealtimeInsert) {
+        realtimeInsertedIdsRef.current.delete(message.id);
         const vp = computeViewportPlacement(
           curPan.x, curPan.y, curZoom,
           vpW, vpH, boardHeight,
@@ -667,36 +787,40 @@ export default function Wall() {
           seed, message.text
         );
         placementsRef.current[message.id] = { ...vp, cardHeight };
+        if (!updatedSavedPositions) {
+          updatedSavedPositions = { ...userPositionsRef.current };
+        }
+        updatedSavedPositions[message.id] = { leftPct: vp.leftPct, topPx: vp.topPx };
         continue;
       }
 
-      // ── Initial load: lane-based spread ───────────────────────────────────
-      const generatedPlacement = generateMessagePlacement(
-        `${message.id}-${message.created_at}`,
-        message.text
-      );
-      const lane    = Math.min(laneCount - 1, Math.max(0, Math.floor((generatedPlacement.pos_x / 100) * laneCount)));
-      const minTopPx = SAFE_AREA_TOP_HEIGHT + 10;
-      const topPx   = Math.max(minTopPx, Math.max(laneHeightsRef.current[lane] ?? minTopPx, generatedPlacement.pos_y));
-      laneHeightsRef.current[lane] = topPx + cardHeight + 20;
-      placementsRef.current[message.id] = {
-        leftPct:     generatedPlacement.pos_x,
-        topPx,
+      const scattered = computeScatteredBoardPlacement(
+        seed,
+        message.text,
         cardHeight,
-        rotationDeg: generatedPlacement.rotation,
-      };
+        placementsRef.current
+      );
+      placementsRef.current[message.id] = { ...scattered, cardHeight };
+    }
+
+    if (updatedSavedPositions) {
+      userPositionsRef.current = updatedSavedPositions;
+      setUserPositions(updatedSavedPositions);
+      persistAllPositions(updatedSavedPositions);
     }
 
     const nextHeight = messages.reduce((max, m) => {
       const p = placementsRef.current[m.id];
       if (!p) return max;
-      return Math.max(max, p.topPx + p.cardHeight);
+      const saved = userPositionsRef.current?.[m.id];
+      const topPx = saved && Number.isFinite(saved.topPx) ? saved.topPx : p.topPx;
+      return Math.max(max, topPx + p.cardHeight);
     }, Math.max(window.innerHeight, 600));
     seenMessageIdsRef.current = currentIds;
     initialPlacementPassDoneRef.current = true;
     setBoardHeight(nextHeight + SAFE_AREA_BOTTOM_HEIGHT + 64);
     setPlacementReady((v) => v + 1);
-  }, [messages, isInitialized, boardHeight]);
+  }, [messages, isLoading, isInitialized, boardHeight]);
 
   // ── Placed messages memo ───────────────────────────────────────────────────
   const placedMessages = useMemo(() => {
@@ -798,6 +922,8 @@ export default function Wall() {
     placementsRef.current = {};
     laneHeightsRef.current = [];
     realtimeQueueRef.current = [];
+    realtimeInsertedIdsRef.current.clear();
+    userPositionsRef.current = {};
     setMessages([]);
     setSelectedEntry(null);
     setUserPositions({});
@@ -821,37 +947,36 @@ export default function Wall() {
       return;
     }
 
-    const laneCount = Math.max(6, Math.min(16, Math.floor(WORLD_WIDTH / 280)));
-    const laneHeights = Array.from({ length: laneCount }, () => SAFE_AREA_TOP_HEIGHT + 20);
     const shuffledMessages = [...messages].sort(() => Math.random() - 0.5);
+    const nextPlacements = {};
     const nextPositions = {};
+    let maxBottom = Math.max(window.innerHeight, 600);
 
     for (const message of shuffledMessages) {
       const plainText = stripAnsiSequences(message.text);
       const bodyLines = Math.min(3, Math.ceil(plainText.length / 40));
       const cardHeight = BASE_CARD_HEIGHT_BASE + bodyLines * BASE_CARD_HEIGHT_LINE;
-      const generatedPlacement = generateMessagePlacement(
-        `${message.id}-${Date.now()}-${Math.random()}`,
-        plainText
+      const seed = `${message.id}-${Date.now()}-${Math.random()}`;
+      const scattered = computeScatteredBoardPlacement(
+        seed,
+        plainText,
+        cardHeight,
+        nextPlacements
       );
-      const lane = Math.min(
-        laneCount - 1,
-        Math.max(0, Math.floor((generatedPlacement.pos_x / 100) * laneCount))
-      );
-      const minTopPx = SAFE_AREA_TOP_HEIGHT + 10;
-      const topPx = Math.max(
-        minTopPx,
-        Math.max(laneHeights[lane] ?? minTopPx, generatedPlacement.pos_y)
-      );
-      laneHeights[lane] = topPx + cardHeight + 20;
+      nextPlacements[message.id] = { ...scattered, cardHeight };
       nextPositions[message.id] = {
-        leftPct: generatedPlacement.pos_x,
-        topPx,
+        leftPct: scattered.leftPct,
+        topPx: scattered.topPx,
       };
+      maxBottom = Math.max(maxBottom, scattered.topPx + cardHeight);
     }
 
+    placementsRef.current = nextPlacements;
+    userPositionsRef.current = nextPositions;
     setUserPositions(nextPositions);
     persistAllPositions(nextPositions);
+    setBoardHeight(maxBottom + SAFE_AREA_BOTTOM_HEIGHT + 64);
+    setPlacementReady((v) => v + 1);
     setAdminNotice({ tone: "success", message: "Shuffled the current entry layout." });
   }, [adminSession, isAdminBusy, messages]);
 
@@ -980,6 +1105,13 @@ export default function Wall() {
       Math.min(boardHeight - SAFE_AREA_BOTTOM_HEIGHT - 100, drag.startTopPx + deltaTopPx)
     );
     if (drag.moved) {
+      if (placementsRef.current[message.id]) {
+        placementsRef.current[message.id] = {
+          ...placementsRef.current[message.id],
+          leftPct: finalLeftPct,
+          topPx: finalTopPx,
+        };
+      }
       persistPosition(message.id, finalLeftPct, finalTopPx);
     } else {
       const now = Date.now();
